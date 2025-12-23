@@ -13,18 +13,18 @@ export default function LandingPage() {
   const features = [
     {
       icon: <Globe className="w-6 h-6 text-sky-500" />,
-      title: "Universal Identity",
-      description: "One name for all your Linera addresses and decentralized websites.",
-    },
-    {
-      icon: <Shield className="w-6 h-6 text-teal-500" />,
-      title: "Secure & Ownership",
-      description: "Fully decentralized and owned by you. No central authority can take it away.",
+      title: "Universal TLDs",
+      description: "Buy and own entire TLDs like .com or .web3. You have full control over the registry.",
     },
     {
       icon: <Zap className="w-6 h-6 text-amber-500" />,
-      title: "Lightning Fast",
-      description: "Built on Linera's multi-chain architecture for near-instant resolution.",
+      title: "Subdomain Economy",
+      description: "Rent subdomains to others. Create a recurring revenue stream from your TLD ownership.",
+    },
+    {
+      icon: <Shield className="w-6 h-6 text-teal-500" />,
+      title: "True Ownership",
+      description: "Unlike ICANN, no one can revoke your TLD. It's a permanent asset on the Linera blockchain.",
     },
   ];
 
@@ -93,13 +93,13 @@ export default function LandingPage() {
             transition={{ duration: 0.6 }}
           >
             <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight mb-6">
-              Your Identity on <br />
+              Own the TLD. <br />
               <span className="bg-clip-text text-transparent bg-gradient-to-r from-sky-600 via-sky-500 to-teal-400">
-                Linera Multi-Chain
+                Govern the Internet.
               </span>
             </h1>
             <p className="text-xl text-zinc-600 dark:text-zinc-400 max-w-2xl mx-auto mb-10 leading-relaxed">
-              Claim your unique .linera domain and simplify your Web3 experience. One name for everything you do on Linera.
+              Linera Name System lets you truly own Top-Level Domains. Launch your own registry, rent subdomains, and build your digital empire.
             </p>
           </motion.div>
 
@@ -116,7 +116,7 @@ export default function LandingPage() {
                 <Search className="ml-5 w-6 h-6 text-zinc-400" />
                 <input
                   type="text"
-                  placeholder="Find your perfect .linera name..."
+                  placeholder="Search for a domain or whole TLD (e.g. .com)..."
                   className="w-full px-4 py-5 bg-transparent border-none focus:ring-0 text-lg outline-none"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -128,9 +128,10 @@ export default function LandingPage() {
             </div>
             <div className="mt-4 flex flex-wrap justify-center gap-4 text-sm text-zinc-500">
               <span>Trending:</span>
-              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">alice.linera</button>
-              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">build.linera</button>
-              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">vault.linera</button>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">.com</button>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">.web3</button>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">alice.com</button>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">build.web3</button>
             </div>
           </motion.div>
         </div>
