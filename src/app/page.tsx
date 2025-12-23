@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Search, Globe, Shield, Zap, ChevronRight, Menu, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { DynamicWidget } from "@dynamic-labs/sdk-react-core";
 
 export default function LandingPage() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -47,12 +48,7 @@ export default function LandingPage() {
             <div className="hidden md:flex items-center gap-8 text-sm font-medium">
               <a href="#features" className="hover:text-sky-500 transition-colors">Features</a>
               <a href="#about" className="hover:text-sky-500 transition-colors">About</a>
-              <Link
-                href="/debug"
-                className="px-5 py-2 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-black hover:scale-105 transition-transform"
-              >
-                Launch App
-              </Link>
+              <DynamicWidget />
             </div>
 
             {/* Mobile Nav Toggle */}
@@ -69,12 +65,7 @@ export default function LandingPage() {
           <div className="md:hidden bg-white dark:bg-black border-b border-zinc-200 dark:border-zinc-800 p-4 space-y-4">
             <a href="#features" className="block text-lg">Features</a>
             <a href="#about" className="block text-lg">About</a>
-            <Link
-              href="/debug"
-              className="block w-full text-center px-5 py-3 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-black"
-            >
-              Launch App
-            </Link>
+            <DynamicWidget />
           </div>
         )}
       </nav>
