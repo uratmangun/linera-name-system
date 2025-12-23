@@ -1,0 +1,40 @@
+{
+  "name": "linera-dynamic-template",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "biome check",
+    "format": "biome format --write",
+    "create-wallet": "bun run scripts/create-wallet.ts",
+    "wallet:init": "bun run scripts/wallet-init.ts",
+    "wallet:show": "bun run scripts/wallet-show.ts",
+    "wallet:balance": "bun run scripts/wallet-balance.ts",
+    "contract:build": "bun run scripts/build-contract.ts",
+    "contract:deploy": "bun run scripts/deploy-contract.ts",
+    "contract:interact": "bun run scripts/contract-interact.ts"
+  },
+  "dependencies": {
+    "@dynamic-labs/ethereum": "^4.47.3",
+    "@dynamic-labs/sdk-react-core": "^4.47.3",
+    "@linera/client": "^0.15.6",
+    "ethers": "^6.15.0",
+    "next": "16.0.9",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "babel-plugin-react-compiler": "1.0.0",
+    "null-loader": "^4.0.1",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
