@@ -14,8 +14,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Linera Counter",
-  description: "Linera Counter Example",
+  title: "Linera Name System | Secure Web3 Identities",
+  description: "The decentralized naming service for the Linera ecosystem. Claim your unique .linera domain today.",
+  icons: {
+    icon: "/logo.png",
+  },
 };
 
 export default function RootLayout({
