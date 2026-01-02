@@ -84,13 +84,13 @@ export default function LandingPage() {
             transition={{ duration: 0.6 }}
           >
             <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight mb-6">
-              Own the TLD. <br />
+              Claim Your <br />
               <span className="bg-clip-text text-transparent bg-gradient-to-r from-sky-600 via-sky-500 to-teal-400">
-                Govern the Internet.
+                .linera Domain
               </span>
             </h1>
             <p className="text-xl text-zinc-600 dark:text-zinc-400 max-w-2xl mx-auto mb-10 leading-relaxed">
-              Linera Name System lets you truly own Top-Level Domains. Launch your own registry, rent subdomains, and build your digital empire.
+              Linera Name System lets you claim your unique .linera domain. Secure your identity on the Linera blockchain.
             </p>
           </motion.div>
 
@@ -118,11 +118,11 @@ export default function LandingPage() {
               </div>
             </div>
             <div className="mt-4 flex flex-wrap justify-center gap-4 text-sm text-zinc-500">
-              <span>Trending:</span>
-              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">.com</button>
-              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">.web3</button>
-              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">alice.com</button>
-              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">build.web3</button>
+              <span>Examples:</span>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">alice.linera</button>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">bob.linera</button>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">wallet.linera</button>
+              <button className="hover:text-zinc-900 dark:hover:text-white transition-colors">defi.linera</button>
             </div>
           </motion.div>
         </div>
