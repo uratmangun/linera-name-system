@@ -11,6 +11,18 @@ export function DynamicProvider({ children }: { children: ReactNode }) {
             settings={{
                 environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID || "",
                 walletConnectors: [EthereumWalletConnectors],
+                overrides: {
+                    views: [
+                        {
+                            type: "login",
+                            sections: [
+                                {
+                                    type: "wallet",
+                                },
+                            ],
+                        },
+                    ],
+                },
             }}
         >
             {children}
