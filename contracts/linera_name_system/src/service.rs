@@ -50,17 +50,58 @@ struct QueryRoot;
 
 #[Object]
 impl QueryRoot {
-    /// Look up the owner of a domain
+    /// Look up the owner of a domain from local state.
+    /// NOTE: For authoritative data, query the registry chain directly.
     async fn owner(&self, ctx: &async_graphql::Context<'_>, name: String) -> Option<String> {
         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
         state.domains.get(&name).await.ok().flatten()
     }
 
-    /// Check if a domain is available
+    /// Check if a domain is available from local state.
+    /// NOTE: For authoritative data, query the registry chain directly.
     async fn is_available(&self, ctx: &async_graphql::Context<'_>, name: String) -> bool {
         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
         state.domains.get(&name).await.ok().flatten().is_none()
     }
+
+    /// Get the registry chain ID (the source of truth for all domains)
+    async fn registry_chain_id(&self, ctx: &async_graphql::Context<'_>) -> String {
+        let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+        runtime.application_creator_chain_id().to_string()
+    }
+
+    /// Check if current chain is the registry chain
+    async fn is_registry_chain(&self, ctx: &async_graphql::Context<'_>) -> bool {
+        let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+        runtime.chain_id() == runtime.application_creator_chain_id()
+    }
+
+    /// Get the current chain ID
+    async fn current_chain_id(&self, ctx: &async_graphql::Context<'_>) -> String {
+        let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+        runtime.chain_id().to_string()
+    }
+
+    /// List all registered domains from local state.
+    /// NOTE: For authoritative data, query the registry chain directly.
+    async fn all_domains(&self, ctx: &async_graphql::Context<'_>) -> Vec<DomainInfo> {
+        let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+        let mut domains = Vec::new();
+        let _ = state.domains.for_each_index_value(|name, owner| {
+            domains.push(DomainInfo {
+                name: name.clone(),
+                owner: owner.to_string(),
+            });
+            Ok(())
+        }).await;
+        domains
+    }
+}
+
+#[derive(async_graphql::SimpleObject)]
+struct DomainInfo {
+    name: String,
+    owner: String,
 }
 
 struct MutationRoot;

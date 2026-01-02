@@ -4,6 +4,6 @@ use linera_sdk::views::{MapView, RootView, ViewStorageContext};
 #[derive(RootView)]
 #[view(context = ViewStorageContext)]
 pub struct LineraNameSystemState {
-    /// Map of domain names to owner addresses
+    /// Map of domain names to owner addresses (global registry on registry chain)
     pub domains: MapView<String, String>,
 }

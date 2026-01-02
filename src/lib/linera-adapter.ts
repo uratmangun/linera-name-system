@@ -1,14 +1,11 @@
-import type {
-  Faucet,
-  Client,
-  Wallet,
-  Application,
-} from "@linera/client";
+import type { Faucet, Client, Wallet, Application } from "@linera/client";
 import type { Wallet as DynamicWallet } from "@dynamic-labs/sdk-react-core";
 import { DynamicSigner } from "./dynamic-signer";
 import { loadLinera } from "./linera-loader";
 
 const LINERA_RPC_URL = "https://faucet.testnet-conway.linera.net";
+const LINERA_NODE_SERVICE_URL =
+  process.env.NEXT_PUBLIC_LINERA_NODE_SERVICE_URL || "http://localhost:8080";
 const COUNTER_APP_ID =
   "99f357923c7e3afe8bfa4355af2d835482f7920cf918eb08ef76a5dd7451177b";
 
@@ -28,7 +25,7 @@ export class LineraAdapter {
   private connectPromise: Promise<LineraProvider> | null = null;
   private onConnectionChange?: () => void;
 
-  private constructor() { }
+  private constructor() {}
 
   static getInstance(): LineraAdapter {
     if (!LineraAdapter.instance) LineraAdapter.instance = new LineraAdapter();
@@ -37,7 +34,7 @@ export class LineraAdapter {
 
   async connect(
     dynamicWallet: DynamicWallet,
-    rpcUrl?: string
+    rpcUrl?: string,
   ): Promise<LineraProvider> {
     if (this.provider) return this.provider;
     if (this.connectPromise) return this.connectPromise;
@@ -62,9 +59,15 @@ export class LineraAdapter {
         const signer = new DynamicSigner(dynamicWallet);
         // Third parameter is skip_process_inbox (false = process inbox)
         // Client constructor may return a Promise in WASM bindings
-        const client = await Promise.resolve(new linera.Client(wallet, signer, true));
+        const client = await Promise.resolve(
+          new linera.Client(wallet, signer, true),
+        );
         console.log("✅ Linera wallet created successfully!");
-        console.log("🔍 Client methods:", Object.keys(client), typeof client.frontend);
+        console.log(
+          "🔍 Client methods:",
+          Object.keys(client),
+          typeof client.frontend,
+        );
 
         this.provider = {
           client,
@@ -83,14 +86,14 @@ export class LineraAdapter {
     } catch (error) {
       console.error("Failed to connect to Linera:", error);
       throw new Error(
-        `Failed to connect to Linera network: ${error instanceof Error ? error.message : "Unknown error"
-        }`
+        `Failed to connect to Linera network: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
       );
     } finally {
       this.connectPromise = null;
     }
   }
-
 
   async setApplication(appId?: string) {
     if (!this.provider) throw new Error("Not connected to Linera");
@@ -113,6 +116,40 @@ export class LineraAdapter {
 
     console.log("✅ Linera application queried successfully!");
     return response as T;
+  }
+
+  /**
+   * Query an application on a specific chain via HTTP request to a public node service.
+   * This is necessary because the SDK's application() method only queries the user's default chain.
+   * URL format: /chains/{chain_id}/applications/{application_id}
+   */
+  async queryApplicationOnChain<T>(
+    chainId: string,
+    applicationId: string,
+    query: string,
+  ): Promise<T> {
+    console.log(`🔍 Querying application on chain ${chainId.slice(0, 16)}...`);
+
+    const url = `${LINERA_NODE_SERVICE_URL}/chains/${chainId}/applications/${applicationId}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `Failed to query application: ${response.status} ${response.statusText} - ${errorText}`,
+      );
+    }
+
+    const result = await response.json();
+    console.log("✅ Cross-chain query successful!");
+    return result as T;
   }
 
   getProvider(): LineraProvider {
