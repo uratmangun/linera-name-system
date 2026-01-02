@@ -1,25 +1,28 @@
 [package]
-name = "counter"
+name = "linera-name-system"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-linera-sdk = "0.15.6"
-linera-views = "0.15.6"
-async-graphql = { version = "7.0", default-features = false }
-serde = { version = "1.0", features = ["derive"] }
-thiserror = "1.0"
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
-name = "counter_contract"
+name = "linera_name_system_contract"
 path = "src/contract.rs"
 
 [[bin]]
-name = "counter_service"
+name = "linera_name_system_service"
 path = "src/service.rs"
 
-[lib]
-path = "src/lib.rs"
+[dependencies]
+linera-sdk = "0.15.0"
+linera-views = "0.15.0"
+serde = { version = "1.0", features = ["derive"] }
+async-graphql = "=7.0.17"
+async-graphql-value = "=7.0.17"
+
+[dev-dependencies]
+linera-sdk = { version = "0.15.0", features = ["test"] }
 
 [profile.release]
 opt-level = "z"
