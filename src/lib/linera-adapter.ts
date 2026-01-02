@@ -4,10 +4,9 @@ import { DynamicSigner } from "./dynamic-signer";
 import { loadLinera } from "./linera-loader";
 
 const LINERA_RPC_URL = "https://faucet.testnet-conway.linera.net";
-const LINERA_NODE_SERVICE_URL =
-  process.env.NEXT_PUBLIC_LINERA_NODE_SERVICE_URL || "http://localhost:8080";
-const COUNTER_APP_ID =
-  "99f357923c7e3afe8bfa4355af2d835482f7920cf918eb08ef76a5dd7451177b";
+const LINERA_APPLICATION_ID =
+  process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID ||
+  "7517edbe70f196b08183d0d31feb76024d2cb7cc3f43931fce2c7ad10f1ea488";
 
 export interface LineraProvider {
   client: Client;
@@ -100,7 +99,7 @@ export class LineraAdapter {
 
     const application = await this.provider.client
       .frontend()
-      .application(appId || COUNTER_APP_ID);
+      .application(appId || LINERA_APPLICATION_ID);
 
     if (!application) throw new Error("Failed to get application");
     console.log("✅ Linera application set successfully!");
@@ -130,20 +129,19 @@ export class LineraAdapter {
   ): Promise<T> {
     console.log(`🔍 Querying application on chain ${chainId.slice(0, 16)}...`);
 
-    const url = `${LINERA_NODE_SERVICE_URL}/chains/${chainId}/applications/${applicationId}`;
-
-    const response = await fetch(url, {
+    // Use the API proxy route to avoid CORS issues
+    const response = await fetch("/api/linera", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ chainId, applicationId, query }),
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorData = await response.json().catch(() => ({}));
       throw new Error(
-        `Failed to query application: ${response.status} ${response.statusText} - ${errorText}`,
+        `Failed to query application: ${response.status} ${response.statusText} - ${errorData.details || errorData.error || "Unknown error"}`,
       );
     }
 
