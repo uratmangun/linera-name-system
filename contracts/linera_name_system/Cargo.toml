@@ -1,5 +1,5 @@
 [package]
-name = "linera-name-system"
+name = "linera_name_system"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,16 +15,17 @@ name = "linera_name_system_service"
 path = "src/service.rs"
 
 [dependencies]
-linera-sdk = "0.15.0"
-linera-views = "0.15.0"
+linera-sdk = "0.15.8"
+linera-views = "0.15.8"
 serde = { version = "1.0", features = ["derive"] }
 async-graphql = "=7.0.17"
 async-graphql-value = "=7.0.17"
 
 [dev-dependencies]
-linera-sdk = { version = "0.15.0", features = ["test"] }
+linera-sdk = { version = "0.15.8", features = ["test"] }
 
 [profile.release]
-opt-level = "z"
+debug = true
 lto = true
-strip = true
+opt-level = 'z'
+strip = 'debuginfo'
