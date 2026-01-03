@@ -56,16 +56,38 @@ Save the returned Application ID for frontend integration.
 
 ### linera_name_system
 
-Domain registration system for .linera domains.
+Domain registration system for .linera domains with expiration, marketplace, and DNS-like value storage.
 
 **Operations:**
-- `Register { name }` - Register a new domain
+- `Register { name }` - Register a new domain (1 year expiration)
 - `Transfer { name, new_owner }` - Transfer domain ownership
+- `Extend { name, years }` - Extend domain registration by years (1-10)
+- `SetPrice { name, price }` - Set domain price for sale (0 to remove from sale)
+- `Buy { name }` - Buy a domain that is for sale
+- `SetValue { name, value }` - Set DNS-like value for a domain
 
 **Queries:**
 - `owner(name)` - Look up domain owner
-- `isAvailable(name)` - Check if domain is available
+- `isAvailable(name)` - Check if domain is available (not registered or expired)
+- `domain(name)` - Get full domain information
+- `resolve(name)` - Resolve domain to its value (DNS-like lookup)
+- `registryChainId()` - Get registry chain ID
+- `isRegistryChain()` - Check if current chain is registry
+- `currentChainId()` - Get current chain ID
+- `allDomains()` - List all registered domains
+- `domainsForSale()` - List domains that are for sale
+- `domainsByOwner(owner)` - List domains owned by address
 
 **Mutations:**
 - `register(name)` - Schedule domain registration
 - `transfer(name, newOwner)` - Schedule ownership transfer
+- `extend(name, years)` - Extend domain registration
+- `setPrice(name, price)` - Set domain price for sale
+- `buy(name)` - Buy a domain
+- `setValue(name, value)` - Set DNS-like value
+
+**Features:**
+- **Expiration**: Domains expire after 1 year (can be extended)
+- **Marketplace**: Domains can be bought/sold by setting price
+- **DNS-like Values**: Domains can store arbitrary text (URL, IP, etc.)
+- **Expired Domains**: Can be re-registered if expired
