@@ -178,6 +178,18 @@ export class LineraAdapter {
     return this.application !== null;
   }
 
+  /**
+   * Get the balance of the connected chain.
+   * Uses the Client.balance() method from @linera/client SDK.
+   * @returns The balance as a string
+   */
+  async getBalance(): Promise<string> {
+    if (!this.provider) throw new Error("Not connected to Linera");
+
+    const balance = await this.provider.client.balance();
+    return balance;
+  }
+
   onConnectionStateChange(callback: () => void): void {
     this.onConnectionChange = callback;
   }
