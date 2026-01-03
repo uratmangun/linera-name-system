@@ -6,7 +6,7 @@ import { loadLinera } from "./linera-loader";
 const LINERA_RPC_URL = "https://faucet.testnet-conway.linera.net";
 const LINERA_APPLICATION_ID =
   process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID ||
-  "7517edbe70f196b08183d0d31feb76024d2cb7cc3f43931fce2c7ad10f1ea488";
+  "8870c972d06cc98f59ede8ecae28804acb66446ef3638bcded797fa789435d78";
 
 export interface LineraProvider {
   client: Client;
