@@ -43,6 +43,8 @@ export default function CounterApp() {
   const [isRegistering, setIsRegistering] = useState(false);
   const [allDomains, setAllDomains] = useState<DomainInfo[]>([]);
   const [isLoadingDomains, setIsLoadingDomains] = useState(false);
+  const [balance, setBalance] = useState<string | null>(null);
+  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
 
   const applicationId = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
 
@@ -109,6 +111,7 @@ export default function CounterApp() {
       setError(null);
       setSearchResult(null);
       setAllDomains([]);
+      setBalance(null);
     }
   }, [isLoggedIn, primaryWallet]);
 
@@ -131,6 +134,21 @@ export default function CounterApp() {
       console.error("Failed to set notification handler:", err);
     }
     return () => {};
+  }, [chainConnected]);
+
+  // Fetch chain balance
+  const fetchBalance = useCallback(async () => {
+    if (!chainConnected) return;
+    setIsLoadingBalance(true);
+
+    try {
+      const bal = await lineraAdapter.getBalance();
+      setBalance(bal);
+    } catch (err) {
+      console.error("Failed to fetch balance:", err);
+    } finally {
+      setIsLoadingBalance(false);
+    }
   }, [chainConnected]);
 
   // Fetch registry chain ID
@@ -173,6 +191,13 @@ export default function CounterApp() {
       setIsLoadingDomains(false);
     }
   }, [appConnected, registryChainId, applicationId]);
+
+  // Fetch balance when chain is connected
+  useEffect(() => {
+    if (chainConnected) {
+      fetchBalance();
+    }
+  }, [chainConnected, fetchBalance]);
 
   // Fetch registry info when app is connected
   useEffect(() => {
@@ -504,6 +529,24 @@ export default function CounterApp() {
                       ? `${chainId.slice(0, 16)}...${chainId.slice(-8)}`
                       : "..."}
                   </code>
+                </p>
+                <p className="text-zinc-700 dark:text-zinc-300">
+                  <span className="font-medium">Balance:</span>{" "}
+                  <code className="rounded bg-zinc-100 px-2 py-1 font-mono text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                    {isLoadingBalance
+                      ? "Loading..."
+                      : balance !== null
+                        ? `${balance} LINERA`
+                        : "..."}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={fetchBalance}
+                    disabled={isLoadingBalance}
+                    className="ml-2 rounded bg-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-300 disabled:opacity-50 dark:bg-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-600"
+                  >
+                    Refresh
+                  </button>
                 </p>
                 {registryChainId && (
                   <p className="text-zinc-700 dark:text-zinc-300">
