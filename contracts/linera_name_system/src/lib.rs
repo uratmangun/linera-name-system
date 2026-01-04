@@ -26,10 +26,14 @@ pub enum Operation {
     Extend { name: String, years: u32 },
     /// Set the price for selling the domain (0 = not for sale)
     SetPrice { name: String, price: u128 },
-    /// Buy a domain that is for sale
-    Buy { name: String },
+    /// Buy a domain that is for sale (requires sending payment)
+    /// expected_price: The price the buyer expects to pay (from querying the registry)
+    /// This prevents front-running attacks where the price changes between query and buy
+    Buy { name: String, expected_price: u128 },
     /// Set the DNS-like value for a domain
     SetValue { name: String, value: String },
+    /// Withdraw accumulated balance from domain sales
+    Withdraw,
 }
 
 /// Cross-chain messages for the name system.
@@ -62,17 +66,24 @@ pub enum Message {
         price: u128,
         requester_chain: ChainId,
     },
-    /// Request to buy a domain
+    /// Request to buy a domain (includes payment amount for verification)
     RequestBuy {
         name: String,
         buyer: String,
         buyer_chain: ChainId,
+        /// The payment amount sent with this request (in attos)
+        payment: u128,
     },
     /// Request to set domain value
     RequestSetValue {
         name: String,
         owner: String,
         value: String,
+        requester_chain: ChainId,
+    },
+    /// Request to withdraw accumulated balance
+    RequestWithdraw {
+        owner: String,
         requester_chain: ChainId,
     },
     /// Response: Registration successful
@@ -93,10 +104,18 @@ pub enum Message {
     SetPriceFailed { name: String, reason: String },
     /// Response: Buy successful
     BuySuccess { name: String, new_owner: String },
-    /// Response: Buy failed
-    BuyFailed { name: String, reason: String },
+    /// Response: Buy failed (includes refund info)
+    BuyFailed {
+        name: String,
+        reason: String,
+        refund_amount: u128,
+    },
     /// Response: Set value successful
     SetValueSuccess { name: String },
     /// Response: Set value failed
     SetValueFailed { name: String, reason: String },
+    /// Response: Withdraw successful
+    WithdrawSuccess { amount: u128 },
+    /// Response: Withdraw failed
+    WithdrawFailed { reason: String },
 }

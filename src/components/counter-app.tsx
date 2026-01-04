@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDynamicContext, useIsLoggedIn } from "@dynamic-labs/sdk-react-core";
 import { DynamicWidget } from "@dynamic-labs/sdk-react-core";
 import { lineraAdapter, type LineraProvider } from "@/lib/linera-adapter";
@@ -72,6 +72,11 @@ export default function CounterApp() {
   const [transferAddress, setTransferAddress] = useState("");
   const [isTransferring, setIsTransferring] = useState(false);
 
+  // Withdraw state
+  const [claimableBalance, setClaimableBalance] = useState<string | null>(null);
+  const [isLoadingClaimable, setIsLoadingClaimable] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+
   const applicationId = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
 
   useEffect(() => {
@@ -138,6 +143,7 @@ export default function CounterApp() {
       setSearchResult(null);
       setAllDomains([]);
       setBalance(null);
+      setClaimableBalance(null);
     }
   }, [isLoggedIn, primaryWallet]);
 
@@ -222,6 +228,32 @@ export default function CounterApp() {
     }
   }, [appConnected, registryChainId, applicationId]);
 
+  // Fetch claimable balance for domain sales
+  const fetchClaimableBalance = useCallback(async () => {
+    if (!appConnected || !registryChainId || !primaryWallet?.address) return;
+    setIsLoadingClaimable(true);
+
+    try {
+      const result = await lineraAdapter.queryApplicationOnChain<{
+        data?: { claimableBalance: string };
+        errors?: Array<{ message: string }>;
+      }>(
+        registryChainId,
+        applicationId,
+        `query { claimableBalance(owner: "${primaryWallet.address}") }`,
+      );
+      if (result.errors?.length) {
+        throw new Error(result.errors[0].message);
+      }
+      setClaimableBalance(result.data?.claimableBalance || "0");
+    } catch (err) {
+      console.error("Failed to fetch claimable balance:", err);
+      setClaimableBalance("0");
+    } finally {
+      setIsLoadingClaimable(false);
+    }
+  }, [appConnected, registryChainId, applicationId, primaryWallet?.address]);
+
   // Fetch balance when chain is connected
   useEffect(() => {
     if (chainConnected) {
@@ -243,6 +275,18 @@ export default function CounterApp() {
     }
   }, [appConnected, registryChainId, fetchAllDomains]);
 
+  // Fetch claimable balance when app is connected and wallet is available
+  useEffect(() => {
+    if (appConnected && registryChainId && primaryWallet?.address) {
+      fetchClaimableBalance();
+    }
+  }, [
+    appConnected,
+    registryChainId,
+    primaryWallet?.address,
+    fetchClaimableBalance,
+  ]);
+
   // Update selectedDomain when allDomains changes (to reflect updates after operations)
   const selectedDomainName = selectedDomain?.name;
   useEffect(() => {
@@ -255,6 +299,43 @@ export default function CounterApp() {
       }
     }
   }, [allDomains, selectedDomainName]);
+
+  async function handleWithdraw() {
+    if (!claimableBalance || claimableBalance === "0") {
+      setError("No balance to withdraw");
+      return;
+    }
+    setIsWithdrawing(true);
+    setError(null);
+
+    try {
+      const result = await lineraAdapter.queryApplication<{
+        data?: { withdraw: boolean };
+        errors?: Array<{ message: string }>;
+      }>({
+        query: `mutation { withdraw }`,
+      });
+
+      if (result.errors?.length) {
+        throw new Error(result.errors[0].message);
+      }
+
+      if (result.data?.withdraw) {
+        alert(
+          `Withdrawal of ${formatPrice(claimableBalance)} LINERA submitted!`,
+        );
+        setTimeout(() => {
+          fetchClaimableBalance();
+          fetchBalance();
+        }, 3000);
+      }
+    } catch (err) {
+      console.error("Failed to withdraw:", err);
+      setError(err instanceof Error ? err.message : "Failed to withdraw");
+    } finally {
+      setIsWithdrawing(false);
+    }
+  }
 
   async function handleCheckDomain() {
     if (!domainName.trim()) {
@@ -494,7 +575,7 @@ export default function CounterApp() {
     }
   }
 
-  async function handleBuyDomain(name: string) {
+  async function handleBuyDomain(name: string, expectedPrice: string) {
     if (!confirm(`Are you sure you want to buy ${name}.linera?`)) {
       return;
     }
@@ -505,7 +586,7 @@ export default function CounterApp() {
         data?: { buy: boolean };
         errors?: Array<{ message: string }>;
       }>({
-        query: `mutation { buy(name: "${name}") }`,
+        query: `mutation { buy(name: "${name}", expectedPrice: "${expectedPrice}") }`,
       });
 
       if (result.errors?.length) {
@@ -633,6 +714,14 @@ export default function CounterApp() {
     setNewValue(domain.value);
     setShowDomainModal(true);
   }
+
+  // Filter domains to only show those owned by the logged-in account
+  const myDomains = useMemo(() => {
+    if (!primaryWallet?.address) return [];
+    return allDomains.filter(
+      (d) => d.owner.toLowerCase() === primaryWallet.address.toLowerCase(),
+    );
+  }, [allDomains, primaryWallet?.address]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
@@ -786,17 +875,41 @@ export default function CounterApp() {
                             Value: {searchResult.domain.value || "(not set)"}
                           </p>
                         </div>
+                        {/* Buy button - show if domain is for sale and not owned by current user */}
+                        {searchResult.domain.isForSale &&
+                          !searchResult.domain.isExpired &&
+                          primaryWallet?.address &&
+                          searchResult.domain.owner.toLowerCase() !==
+                            primaryWallet.address.toLowerCase() && (
+                            <div className="mt-4">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleBuyDomain(
+                                    searchResult.domain!.name,
+                                    searchResult.domain!.price,
+                                  )
+                                }
+                                disabled={isBuying}
+                                className="w-full rounded-lg bg-green-600 px-6 py-2 font-medium text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isBuying
+                                  ? "Buying..."
+                                  : `Buy for ${formatPrice(searchResult.domain.price)} LINERA`}
+                              </button>
+                            </div>
+                          )}
                       </div>
                     )}
                   </div>
                 )}
               </div>
 
-              {/* All Registered Domains */}
+              {/* My Domains - Only show domains owned by logged-in account */}
               <div className="rounded-lg bg-zinc-100 p-6 dark:bg-zinc-800">
                 <div className="mb-4 flex items-center justify-between">
                   <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
-                    Registered Domains
+                    My Domains
                   </h2>
                   <button
                     type="button"
@@ -807,15 +920,15 @@ export default function CounterApp() {
                     {isLoadingDomains ? "Loading..." : "Refresh"}
                   </button>
                 </div>
-                {allDomains.length === 0 ? (
+                {myDomains.length === 0 ? (
                   <p className="text-zinc-500 dark:text-zinc-400">
                     {isLoadingDomains
                       ? "Loading domains..."
-                      : "No domains registered yet."}
+                      : "You don't own any domains yet."}
                   </p>
                 ) : (
                   <ul className="max-h-64 space-y-2 overflow-y-auto">
-                    {allDomains.map((domain) => (
+                    {myDomains.map((domain) => (
                       <li
                         key={domain.name}
                         onClick={() => openDomainModal(domain)}
@@ -828,10 +941,6 @@ export default function CounterApp() {
                           <div>
                             <p className="font-medium text-zinc-900 dark:text-white">
                               {domain.name}.linera
-                            </p>
-                            <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                              Owner: {domain.owner.slice(0, 16)}...
-                              {domain.owner.slice(-8)}
                             </p>
                           </div>
                           <div className="text-right text-xs">
@@ -855,6 +964,55 @@ export default function CounterApp() {
                     ))}
                   </ul>
                 )}
+              </div>
+
+              {/* Claimable Balance & Withdraw Section */}
+              <div className="rounded-lg bg-zinc-100 p-6 dark:bg-zinc-800">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
+                    Domain Sales Balance
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={fetchClaimableBalance}
+                    disabled={isLoadingClaimable}
+                    className="rounded-lg bg-zinc-200 px-3 py-1 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-300 disabled:opacity-50 dark:bg-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-600"
+                  >
+                    {isLoadingClaimable ? "Loading..." : "Refresh"}
+                  </button>
+                </div>
+                <div className="rounded-lg bg-white p-4 dark:bg-zinc-900">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                        Claimable Balance from Domain Sales
+                      </p>
+                      <p className="text-2xl font-bold text-zinc-900 dark:text-white">
+                        {isLoadingClaimable
+                          ? "Loading..."
+                          : claimableBalance
+                            ? `${formatPrice(claimableBalance)} LINERA`
+                            : "0 LINERA"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleWithdraw}
+                      disabled={
+                        isWithdrawing ||
+                        !claimableBalance ||
+                        claimableBalance === "0"
+                      }
+                      className="rounded-lg bg-green-600 px-6 py-2 font-medium text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isWithdrawing ? "Withdrawing..." : "Withdraw"}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    When someone buys your domain, the payment is held here.
+                    Click withdraw to transfer it to your chain.
+                  </p>
+                </div>
               </div>
             </div>
           )}
@@ -1065,7 +1223,12 @@ export default function CounterApp() {
                         </p>
                         <button
                           type="button"
-                          onClick={() => handleBuyDomain(selectedDomain.name)}
+                          onClick={() =>
+                            handleBuyDomain(
+                              selectedDomain.name,
+                              selectedDomain.price,
+                            )
+                          }
                           disabled={isBuying}
                           className="w-full rounded-lg bg-green-600 px-4 py-2 font-medium text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >

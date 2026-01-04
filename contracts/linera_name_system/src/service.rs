@@ -169,10 +169,11 @@ impl QueryRoot {
         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
         let current_time = runtime.system_time().micros();
+        let owner_lower = owner.to_lowercase();
         
         let mut domains = Vec::new();
         let _ = state.domains.for_each_index_value(|name, record| {
-            if record.owner == owner {
+            if record.owner == owner_lower {
                 domains.push(DomainInfo {
                     name: name.clone(),
                     owner: record.owner.clone(),
@@ -187,6 +188,17 @@ impl QueryRoot {
             Ok(())
         }).await;
         domains
+    }
+
+    /// Get the claimable balance for a specific owner (from domain sales)
+    async fn claimable_balance(&self, ctx: &async_graphql::Context<'_>, owner: String) -> String {
+        let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+        let owner_lower = owner.to_lowercase();
+        
+        match state.balances.get(&owner_lower).await.ok().flatten() {
+            Some(balance) => balance.to_string(),
+            None => "0".to_string(),
+        }
     }
 }
 
@@ -240,9 +252,11 @@ impl MutationRoot {
     }
 
     /// Buy a domain that is for sale
-    async fn buy(&self, ctx: &async_graphql::Context<'_>, name: String) -> bool {
+    /// expected_price should match the current price from domain query
+    async fn buy(&self, ctx: &async_graphql::Context<'_>, name: String, expected_price: String) -> bool {
         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
-        let operation = Operation::Buy { name };
+        let price_value: u128 = expected_price.parse().expect("Invalid price format");
+        let operation = Operation::Buy { name, expected_price: price_value };
         runtime.schedule_operation(&operation);
         true
     }
@@ -251,6 +265,14 @@ impl MutationRoot {
     async fn set_value(&self, ctx: &async_graphql::Context<'_>, name: String, value: String) -> bool {
         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
         let operation = Operation::SetValue { name, value };
+        runtime.schedule_operation(&operation);
+        true
+    }
+
+    /// Withdraw accumulated balance from domain sales
+    async fn withdraw(&self, ctx: &async_graphql::Context<'_>) -> bool {
+        let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+        let operation = Operation::Withdraw;
         runtime.schedule_operation(&operation);
         true
     }

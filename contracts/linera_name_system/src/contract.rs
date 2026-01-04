@@ -4,6 +4,7 @@ mod state;
 
 use linera_sdk::{
     abi::WithContractAbi,
+    linera_base_types::{Account, AccountOwner, Amount},
     views::{RootView, View},
     Contract, ContractRuntime,
 };
@@ -40,6 +41,17 @@ impl LineraNameSystemContract {
     fn is_expired(&mut self, record: &DomainRecord) -> bool {
         self.current_time() > record.expiration
     }
+
+    /// Convert u128 price to Amount
+    fn amount_from_u128(value: u128) -> Amount {
+        Amount::from_attos(value)
+    }
+
+    /// Convert Amount to u128
+    #[allow(dead_code)]
+    fn amount_to_u128(amount: Amount) -> u128 {
+        amount.to_attos()
+    }
 }
 
 impl Contract for LineraNameSystemContract {
@@ -60,9 +72,9 @@ impl Contract for LineraNameSystemContract {
     }
 
     async fn execute_operation(&mut self, operation: Self::Operation) -> Self::Response {
-        let owner = self.runtime.authenticated_signer()
-            .expect("Operation must be signed")
-            .to_string();
+        let signer = self.runtime.authenticated_signer()
+            .expect("Operation must be signed");
+        let owner = signer.to_string().to_lowercase();
         
         let current_chain = self.runtime.chain_id();
         let registry_chain_id = self.registry_chain_id();
@@ -181,27 +193,86 @@ impl Contract for LineraNameSystemContract {
                     self.runtime.send_message(registry_chain_id, message);
                 }
             }
-            Operation::Buy { name } => {
+            Operation::Buy { name, expected_price } => {
+                // For buying domains, we need to handle payment
+                // On the registry chain, we can do it directly
+                // For cross-chain, we use the expected_price from frontend query
+                
+                assert!(expected_price > 0, "Price must be greater than 0");
+                
                 if current_chain == registry_chain_id {
-                    let mut record = self.state.domains.get(&name).await
+                    // Direct purchase on registry chain
+                    let record = self.state.domains.get(&name).await
                         .expect("Failed to read state")
                         .expect("Domain not registered");
                     
                     assert!(!self.is_expired(&record), "Domain has expired");
                     assert!(record.price > 0, "Domain is not for sale");
                     assert_ne!(record.owner, owner, "Cannot buy your own domain");
+                    assert_eq!(record.price, expected_price, "Price has changed, please refresh");
+                    
+                    let price = record.price;
+                    let previous_owner = record.owner.clone();
+                    
+                    // Transfer payment from buyer to application (escrow)
+                    // The buyer's tokens go to the application's account on this chain
+                    // Use AccountOwner::CHAIN as source because user's tokens are in the chain's balance
+                    let app_id = self.runtime.application_id();
+                    let app_owner: AccountOwner = app_id.forget_abi().into();
+                    let destination = Account {
+                        chain_id: current_chain,
+                        owner: app_owner,
+                    };
+                    
+                    self.runtime.transfer(
+                        AccountOwner::CHAIN,  // source: the chain's balance (where user tokens are)
+                        destination,
+                        Self::amount_from_u128(price),
+                    );
+                    
+                    // Credit the previous owner's balance for later withdrawal
+                    let current_balance = self.state.balances.get(&previous_owner).await
+                        .expect("Failed to read balance")
+                        .unwrap_or(0);
+                    self.state.balances.insert(&previous_owner, current_balance + price)
+                        .expect("Failed to update balance");
                     
                     // Transfer ownership
-                    record.owner = owner;
-                    record.owner_chain_id = current_chain;
-                    record.price = 0; // Reset price after purchase
-                    self.state.domains.insert(&name, record).expect("Failed to buy domain");
+                    let mut updated_record = record;
+                    updated_record.owner = owner;
+                    updated_record.owner_chain_id = current_chain;
+                    updated_record.price = 0; // Reset price after purchase
+                    self.state.domains.insert(&name, updated_record).expect("Failed to buy domain");
                 } else {
+                    // Cross-chain purchase:
+                    // 1. Transfer tokens from buyer's chain to application account on registry chain
+                    // 2. Send RequestBuy message with payment amount
+                    // The frontend queries the price first and passes it as expected_price
+                    
+                    let app_id = self.runtime.application_id();
+                    let app_owner: AccountOwner = app_id.forget_abi().into();
+                    
+                    // Transfer tokens to the application's account on the registry chain
+                    // Use AccountOwner::CHAIN as source because user's tokens are in the chain's balance
+                    let destination = Account {
+                        chain_id: registry_chain_id,
+                        owner: app_owner,
+                    };
+                    
+                    self.runtime.transfer(
+                        AccountOwner::CHAIN,  // source: the chain's balance (where user tokens are)
+                        destination,
+                        Self::amount_from_u128(expected_price),
+                    );
+                    
+                    // Send the buy request with the payment amount
                     let message = Message::RequestBuy {
                         name,
-                        buyer: owner,
+                        buyer: owner.clone(),
                         buyer_chain: current_chain,
+                        payment: expected_price,
                     };
+                    
                     self.runtime.send_message(registry_chain_id, message);
                 }
             }
@@ -223,6 +294,40 @@ impl Contract for LineraNameSystemContract {
                         name,
                         owner,
                         value,
+                        requester_chain: current_chain,
+                    };
+                    self.runtime.send_message(registry_chain_id, message);
+                }
+            }
+            Operation::Withdraw => {
+                if current_chain == registry_chain_id {
+                    // Direct withdrawal on registry chain
+                    let balance = self.state.balances.get(&owner).await
+                        .expect("Failed to read balance")
+                        .unwrap_or(0);
+                    
+                    assert!(balance > 0, "No balance to withdraw");
+                    
+                    // Transfer from application to the user
+                    let app_id = self.runtime.application_id();
+                    let app_owner: AccountOwner = app_id.forget_abi().into();
+                    let destination = Account {
+                        chain_id: current_chain,
+                        owner: signer,  // Send to the authenticated signer
+                    };
+                    
+                    self.runtime.transfer(
+                        app_owner,  // source: the application
+                        destination,
+                        Self::amount_from_u128(balance),
+                    );
+                    
+                    // Clear the balance
+                    self.state.balances.remove(&owner).expect("Failed to clear balance");
+                } else {
+                    // Cross-chain withdrawal
+                    let message = Message::RequestWithdraw {
+                        owner,
                         requester_chain: current_chain,
                     };
                     self.runtime.send_message(registry_chain_id, message);
@@ -369,7 +474,7 @@ impl Contract for LineraNameSystemContract {
                     }
                 }
             }
-            Message::RequestBuy { name, buyer, buyer_chain } => {
+            Message::RequestBuy { name, buyer, buyer_chain, payment } => {
                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process purchases");
                 
                 let stored = self.state.domains.get(&name).await.expect("Failed to read state");
@@ -378,6 +483,7 @@ impl Contract for LineraNameSystemContract {
                         let response = Message::BuyFailed {
                             name,
                             reason: "Domain not registered".to_string(),
+                            refund_amount: payment,
                         };
                         self.runtime.send_message(buyer_chain, response);
                     }
@@ -385,6 +491,7 @@ impl Contract for LineraNameSystemContract {
                         let response = Message::BuyFailed {
                             name,
                             reason: "Domain has expired".to_string(),
+                            refund_amount: payment,
                         };
                         self.runtime.send_message(buyer_chain, response);
                     }
@@ -392,6 +499,7 @@ impl Contract for LineraNameSystemContract {
                         let response = Message::BuyFailed {
                             name,
                             reason: "Domain is not for sale".to_string(),
+                            refund_amount: payment,
                         };
                         self.runtime.send_message(buyer_chain, response);
                     }
@@ -399,14 +507,35 @@ impl Contract for LineraNameSystemContract {
                         let response = Message::BuyFailed {
                             name,
                             reason: "Cannot buy your own domain".to_string(),
+                            refund_amount: payment,
+                        };
+                        self.runtime.send_message(buyer_chain, response);
+                    }
+                    Some(record) if payment < record.price => {
+                        let response = Message::BuyFailed {
+                            name,
+                            reason: format!("Insufficient payment: required {}, got {}", record.price, payment),
+                            refund_amount: payment,
                         };
                         self.runtime.send_message(buyer_chain, response);
                     }
                     Some(mut record) => {
+                        let price = record.price;
+                        let previous_owner = record.owner.clone();
+                        
+                        // Credit the previous owner's balance for later withdrawal
+                        let current_balance = self.state.balances.get(&previous_owner).await
+                            .expect("Failed to read balance")
+                            .unwrap_or(0);
+                        self.state.balances.insert(&previous_owner, current_balance + price)
+                            .expect("Failed to update balance");
+                        
+                        // Transfer ownership
                         record.owner = buyer.clone();
                         record.owner_chain_id = buyer_chain;
                         record.price = 0;
                         self.state.domains.insert(&name, record).expect("Failed to buy domain");
+                        
                         let response = Message::BuySuccess { name, new_owner: buyer };
                         self.runtime.send_message(buyer_chain, response);
                     }
@@ -446,6 +575,43 @@ impl Contract for LineraNameSystemContract {
                     }
                 }
             }
+            Message::RequestWithdraw { owner, requester_chain } => {
+                assert_eq!(current_chain, registry_chain_id, "Only registry chain can process withdrawals");
+                
+                let balance = self.state.balances.get(&owner).await
+                    .expect("Failed to read balance")
+                    .unwrap_or(0);
+                
+                if balance == 0 {
+                    let response = Message::WithdrawFailed {
+                        reason: "No balance to withdraw".to_string(),
+                    };
+                    self.runtime.send_message(requester_chain, response);
+                    return;
+                }
+                
+                // Transfer from application to the requester chain
+                let app_id = self.runtime.application_id();
+                let app_owner: AccountOwner = app_id.forget_abi().into();
+                
+                // For cross-chain transfer, we send to the chain's account
+                let destination = Account {
+                    chain_id: requester_chain,
+                    owner: AccountOwner::CHAIN,  // Chain account
+                };
+                
+                self.runtime.transfer(
+                    app_owner,  // source: the application
+                    destination,
+                    Self::amount_from_u128(balance),
+                );
+                
+                // Clear the balance
+                self.state.balances.remove(&owner).expect("Failed to clear balance");
+                
+                let response = Message::WithdrawSuccess { amount: balance };
+                self.runtime.send_message(requester_chain, response);
+            }
             // Response messages - just log them
             Message::RegistrationSuccess { name } => { let _ = name; }
             Message::RegistrationFailed { name, reason } => { let _ = (name, reason); }
@@ -456,9 +622,11 @@ impl Contract for LineraNameSystemContract {
             Message::SetPriceSuccess { name, price } => { let _ = (name, price); }
             Message::SetPriceFailed { name, reason } => { let _ = (name, reason); }
             Message::BuySuccess { name, new_owner } => { let _ = (name, new_owner); }
-            Message::BuyFailed { name, reason } => { let _ = (name, reason); }
+            Message::BuyFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
             Message::SetValueSuccess { name } => { let _ = name; }
             Message::SetValueFailed { name, reason } => { let _ = (name, reason); }
+            Message::WithdrawSuccess { amount } => { let _ = amount; }
+            Message::WithdrawFailed { reason } => { let _ = reason; }
         }
     }
 
