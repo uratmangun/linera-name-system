@@ -736,7 +736,41 @@ impl Contract for LineraNameSystemContract {
                 let response = Message::WithdrawSuccess { amount: balance };
                 self.runtime.send_message(requester_chain, response);
             }
+            Message::RequestCheckOwnership { name, requester_chain } => {
+                // Handle cross-chain domain ownership check from domain_checker contract
+                // This can be processed on any chain, but only the registry chain has the data
+                assert_eq!(current_chain, registry_chain_id, "Only registry chain can check ownership");
+                
+                let stored = self.state.domains.get(&name).await.expect("Failed to read state");
+                
+                let response = match stored {
+                    None => {
+                        // Domain not registered
+                        Message::OwnershipResponse {
+                            name,
+                            owner: None,
+                            is_available: true,
+                            expiration: None,
+                        }
+                    }
+                    Some(record) => {
+                        let is_expired = current_time > record.expiration;
+                        Message::OwnershipResponse {
+                            name,
+                            owner: Some(record.owner),
+                            is_available: is_expired,
+                            expiration: Some(record.expiration),
+                        }
+                    }
+                };
+                
+                self.runtime.send_message(requester_chain, response);
+            }
             // Response messages - just log them
+            Message::OwnershipResponse { name, owner, is_available, expiration } => {
+                // This is a response message, just log it
+                let _ = (name, owner, is_available, expiration);
+            }
             Message::RegistrationSuccess { name } => { let _ = name; }
             Message::RegistrationFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
             Message::TransferSuccess { name, new_owner } => { let _ = (name, new_owner); }
