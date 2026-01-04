@@ -90,6 +90,18 @@ pub enum Message {
         owner: String,
         requester_chain: ChainId,
     },
+    /// Request to check domain ownership (from domain_checker contract)
+    RequestCheckOwnership {
+        name: String,
+        requester_chain: ChainId,
+    },
+    /// Response: Domain ownership info
+    OwnershipResponse {
+        name: String,
+        owner: Option<String>,
+        is_available: bool,
+        expiration: Option<u64>,
+    },
     /// Response: Registration successful
     RegistrationSuccess { name: String },
     /// Response: Registration failed (domain taken, includes refund info)

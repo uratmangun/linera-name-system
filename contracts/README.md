@@ -15,6 +15,14 @@ contracts/
 │       ├── state.rs        # Application state
 │       ├── contract.rs     # Contract logic (mutations)
 │       └── service.rs      # Service logic (queries)
+├── domain_checker/         # Cross-chain domain query test contract
+│   ├── Cargo.toml
+│   ├── rust-toolchain.toml
+│   └── src/
+│       ├── lib.rs          # ABI definitions
+│       ├── state.rs        # Application state
+│       ├── contract.rs     # Contract logic (mutations)
+│       └── service.rs      # Service logic (queries)
 └── <future_contract>/      # Add more contracts here
 ```
 
@@ -91,3 +99,44 @@ Domain registration system for .linera domains with expiration, marketplace, and
 - **Marketplace**: Domains can be bought/sold by setting price
 - **DNS-like Values**: Domains can store arbitrary text (URL, IP, etc.)
 - **Expired Domains**: Can be re-registered if expired
+
+### domain_checker
+
+Test contract demonstrating cross-chain state queries using the Request-Response pattern. This contract queries domain ownership information from the LNS registry on another chain.
+
+**Purpose:**
+This contract tests whether smart contracts can query state from another chain. Since Linera uses per-chain state isolation, cross-chain queries must be asynchronous via message passing.
+
+**How it works:**
+1. User calls `CheckOwnership` operation on domain_checker contract
+2. Contract sends `RequestCheckOwnership` message to LNS registry chain
+3. LNS registry processes the request and sends `OwnershipResponse` back
+4. domain_checker receives the response and stores it in local state
+5. UI polls the contract state to retrieve the cached result
+
+**Operations:**
+- `CheckOwnership { name, registry_chain_id }` - Query domain ownership from LNS registry
+
+**Messages:**
+- `RequestCheckOwnership { name, requester_chain }` - Sent to LNS registry
+- `OwnershipResponse { name, owner, is_available, expiration }` - Response from LNS registry
+
+**Queries:**
+- `domainQuery(name)` - Get cached query result for a domain
+- `isQueryPending(name)` - Check if a query is waiting for response
+- `pendingQueryTimestamp(name)` - Get timestamp when query was initiated
+- `allCachedQueries()` - List all cached domain query results
+- `currentChainId()` - Get current chain ID
+
+**Building:**
+```bash
+cd contracts/domain_checker
+cargo build --release --target wasm32-unknown-unknown
+```
+
+**Deploying:**
+```bash
+linera project publish-and-create contracts/domain_checker --json-argument "null"
+```
+
+**Note:** This contract requires the LNS registry to be deployed first, as it sends messages to the registry chain.

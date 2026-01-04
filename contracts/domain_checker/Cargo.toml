@@ -1,0 +1,31 @@
+[package]
+name = "domain_checker"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "domain_checker_contract"
+path = "src/contract.rs"
+
+[[bin]]
+name = "domain_checker_service"
+path = "src/service.rs"
+
+[dependencies]
+linera-sdk = "0.15.8"
+linera-views = "0.15.8"
+serde = { version = "1.0", features = ["derive"] }
+async-graphql = "=7.0.17"
+async-graphql-value = "=7.0.17"
+
+[dev-dependencies]
+linera-sdk = { version = "0.15.8", features = ["test"] }
+
+[profile.release]
+debug = true
+lto = true
+opt-level = 'z'
+strip = 'debuginfo'
