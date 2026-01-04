@@ -27,16 +27,22 @@ function parseArgs(): { chainId?: string; initialValue: string } {
   return { chainId, initialValue };
 }
 
-async function deployContract(initialValue: string, chainId?: string): Promise<void> {
+async function deployContract(
+  initialValue: string,
+  chainId?: string,
+): Promise<void> {
   console.log("\n========================================");
   console.log("   Linera Contract Deployment");
   console.log("========================================\n");
 
   const contractsDir = join(process.cwd(), "contracts");
-  const wasmDir = join(contractsDir, "target/wasm32-unknown-unknown/release");
+  const wasmDir = join(
+    contractsDir,
+    "linera_name_system/target/wasm32-unknown-unknown/release",
+  );
 
-  const contractWasm = join(wasmDir, "counter_contract.wasm");
-  const serviceWasm = join(wasmDir, "counter_service.wasm");
+  const contractWasm = join(wasmDir, "linera_name_system_contract.wasm");
+  const serviceWasm = join(wasmDir, "linera_name_system_service.wasm");
 
   // Check if WASM files exist
   if (!existsSync(contractWasm)) {

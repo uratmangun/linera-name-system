@@ -23,4 +23,7 @@ pub struct DomainRecord {
 pub struct LineraNameSystemState {
     /// Map of domain names to domain records (global registry on registry chain)
     pub domains: MapView<String, DomainRecord>,
+    /// Claimable balances for domain sellers (owner address -> amount in attos)
+    /// Tokens are held in escrow on the registry chain until withdrawn
+    pub balances: MapView<String, u128>,
 }
