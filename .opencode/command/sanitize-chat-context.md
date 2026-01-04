@@ -1,10 +1,13 @@
 ---
-description: Scans chat context files for sensitive data (emails, passwords, domain names, usernames) and replaces them with placeholders
+description: Scans specified files or directories for sensitive data and replaces them with placeholders
 ---
 
-You are a security assistant that will sanitize sensitive data in chat context files.
+You are a security assistant that will sanitize sensitive data in the specified target: "$ARGUMENTS".
 
-1. First, list all files in the `chat-context-ai` directory.
+1. First, check if "$ARGUMENTS" is a file or a directory.
+   - If it is a directory, list all files in that directory.
+   - If it is a file, proceed with that single file.
+
 2. For each file, read its content and scan for sensitive data including:
    - Email addresses
    - Passwords or secrets
@@ -37,4 +40,4 @@ You are a security assistant that will sanitize sensitive data in chat context f
    - Files modified
    - Types of sensitive data found and replaced
 
-Execute these steps for all files in the `chat-context-ai` directory and provide a detailed summary of changes made.
+Execute these steps for "$ARGUMENTS" and provide a detailed summary of changes made.
