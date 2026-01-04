@@ -44,6 +44,8 @@ pub enum Message {
         name: String,
         owner: String,
         requester_chain: ChainId,
+        /// The registration fee sent with this request (in attos)
+        payment: u128,
     },
     /// Request to transfer a domain on the registry chain
     RequestTransfer {
@@ -58,6 +60,8 @@ pub enum Message {
         owner: String,
         years: u32,
         requester_chain: ChainId,
+        /// The extension fee sent with this request (in attos)
+        payment: u128,
     },
     /// Request to set domain price
     RequestSetPrice {
@@ -88,16 +92,24 @@ pub enum Message {
     },
     /// Response: Registration successful
     RegistrationSuccess { name: String },
-    /// Response: Registration failed (domain taken)
-    RegistrationFailed { name: String, reason: String },
+    /// Response: Registration failed (domain taken, includes refund info)
+    RegistrationFailed {
+        name: String,
+        reason: String,
+        refund_amount: u128,
+    },
     /// Response: Transfer successful
     TransferSuccess { name: String, new_owner: String },
     /// Response: Transfer failed
     TransferFailed { name: String, reason: String },
     /// Response: Extension successful
     ExtendSuccess { name: String, new_expiration: u64 },
-    /// Response: Extension failed
-    ExtendFailed { name: String, reason: String },
+    /// Response: Extension failed (includes refund info)
+    ExtendFailed {
+        name: String,
+        reason: String,
+        refund_amount: u128,
+    },
     /// Response: Set price successful
     SetPriceSuccess { name: String, price: u128 },
     /// Response: Set price failed

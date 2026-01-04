@@ -15,6 +15,9 @@ use self::state::{LineraNameSystemState, DomainRecord};
 /// One year in microseconds (365 days)
 const ONE_YEAR_MICROS: u64 = 365 * 24 * 60 * 60 * 1_000_000;
 
+/// Registration/Extension fee: 0.1 LINERA per year (in attos, 10^18 attos = 1 LINERA)
+const REGISTRATION_FEE: u128 = 100_000_000_000_000_000;
+
 pub struct LineraNameSystemContract {
     state: LineraNameSystemState,
     runtime: ContractRuntime<Self>,
@@ -89,6 +92,10 @@ impl Contract for LineraNameSystemContract {
                     "Invalid characters in domain name"
                 );
 
+                // Get app account for receiving the registration fee
+                let app_id = self.runtime.application_id();
+                let app_owner: AccountOwner = app_id.forget_abi().into();
+
                 if current_chain == registry_chain_id {
                     // We ARE the registry chain - register directly
                     let existing = self.state.domains.get(&name).await.expect("Failed to read state");
@@ -99,6 +106,17 @@ impl Contract for LineraNameSystemContract {
                             panic!("Domain already registered and not expired");
                         }
                     }
+                    
+                    // Transfer registration fee from user to application account
+                    let destination = Account {
+                        chain_id: current_chain,
+                        owner: app_owner,
+                    };
+                    self.runtime.transfer(
+                        AccountOwner::CHAIN,
+                        destination,
+                        Self::amount_from_u128(REGISTRATION_FEE),
+                    );
                     
                     // Register the domain with 1 year expiration
                     let expiration = self.current_time() + ONE_YEAR_MICROS;
@@ -111,11 +129,23 @@ impl Contract for LineraNameSystemContract {
                     };
                     self.state.domains.insert(&name, record).expect("Failed to register domain");
                 } else {
-                    // Send registration request to registry chain
+                    // Transfer registration fee to application account on registry chain
+                    let destination = Account {
+                        chain_id: registry_chain_id,
+                        owner: app_owner,
+                    };
+                    self.runtime.transfer(
+                        AccountOwner::CHAIN,
+                        destination,
+                        Self::amount_from_u128(REGISTRATION_FEE),
+                    );
+                    
+                    // Send registration request to registry chain with payment info
                     let message = Message::RequestRegister {
                         name,
                         owner,
                         requester_chain: current_chain,
+                        payment: REGISTRATION_FEE,
                     };
                     self.runtime.send_message(registry_chain_id, message);
                 }
@@ -147,12 +177,30 @@ impl Contract for LineraNameSystemContract {
             Operation::Extend { name, years } => {
                 assert!(years > 0 && years <= 10, "Years must be between 1 and 10");
                 
+                // Calculate total extension fee
+                let total_fee = (years as u128) * REGISTRATION_FEE;
+                
+                // Get app account for receiving the extension fee
+                let app_id = self.runtime.application_id();
+                let app_owner: AccountOwner = app_id.forget_abi().into();
+                
                 if current_chain == registry_chain_id {
                     let mut record = self.state.domains.get(&name).await
                         .expect("Failed to read state")
                         .expect("Domain not registered");
                     
                     assert_eq!(record.owner, owner, "Not the domain owner");
+                    
+                    // Transfer extension fee from user to application account
+                    let destination = Account {
+                        chain_id: current_chain,
+                        owner: app_owner,
+                    };
+                    self.runtime.transfer(
+                        AccountOwner::CHAIN,
+                        destination,
+                        Self::amount_from_u128(total_fee),
+                    );
                     
                     // Extend from current expiration or current time if expired
                     let base_time = if self.is_expired(&record) {
@@ -163,11 +211,23 @@ impl Contract for LineraNameSystemContract {
                     record.expiration = base_time + (years as u64 * ONE_YEAR_MICROS);
                     self.state.domains.insert(&name, record).expect("Failed to extend domain");
                 } else {
+                    // Transfer extension fee to application account on registry chain
+                    let destination = Account {
+                        chain_id: registry_chain_id,
+                        owner: app_owner,
+                    };
+                    self.runtime.transfer(
+                        AccountOwner::CHAIN,
+                        destination,
+                        Self::amount_from_u128(total_fee),
+                    );
+                    
                     let message = Message::RequestExtend {
                         name,
                         owner,
                         years,
                         requester_chain: current_chain,
+                        payment: total_fee,
                     };
                     self.runtime.send_message(registry_chain_id, message);
                 }
@@ -342,21 +402,50 @@ impl Contract for LineraNameSystemContract {
         let current_time = self.current_time();
 
         match message {
-            Message::RequestRegister { name, owner, requester_chain } => {
+            Message::RequestRegister { name, owner, requester_chain, payment } => {
                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process registrations");
+                
+                // Verify the payment matches the required fee
+                let required_fee = REGISTRATION_FEE;
                 
                 let existing = self.state.domains.get(&name).await.expect("Failed to read state");
                 
                 // Check if domain exists and is not expired
                 if let Some(record) = existing {
                     if current_time <= record.expiration {
+                        // Registration failed - credit the payment to owner's balance for refund
+                        let current_balance = self.state.balances.get(&owner).await
+                            .expect("Failed to read balance")
+                            .unwrap_or(0);
+                        self.state.balances.insert(&owner, current_balance + payment)
+                            .expect("Failed to update balance");
+                        
                         let response = Message::RegistrationFailed {
                             name,
                             reason: "Domain already registered and not expired".to_string(),
+                            refund_amount: payment,
                         };
                         self.runtime.send_message(requester_chain, response);
                         return;
                     }
+                }
+                
+                // Verify payment is sufficient
+                if payment < required_fee {
+                    // Credit the payment to owner's balance for refund
+                    let current_balance = self.state.balances.get(&owner).await
+                        .expect("Failed to read balance")
+                        .unwrap_or(0);
+                    self.state.balances.insert(&owner, current_balance + payment)
+                        .expect("Failed to update balance");
+                    
+                    let response = Message::RegistrationFailed {
+                        name,
+                        reason: format!("Insufficient payment: required {}, got {}", required_fee, payment),
+                        refund_amount: payment,
+                    };
+                    self.runtime.send_message(requester_chain, response);
+                    return;
                 }
                 
                 // Register the domain with 1 year expiration
@@ -407,22 +496,57 @@ impl Contract for LineraNameSystemContract {
                     }
                 }
             }
-            Message::RequestExtend { name, owner, years, requester_chain } => {
+            Message::RequestExtend { name, owner, years, requester_chain, payment } => {
                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process extensions");
+                
+                // Calculate required fee
+                let required_fee = (years as u128) * REGISTRATION_FEE;
                 
                 let stored = self.state.domains.get(&name).await.expect("Failed to read state");
                 match stored {
                     None => {
+                        // Credit the payment to owner's balance for refund
+                        let current_balance = self.state.balances.get(&owner).await
+                            .expect("Failed to read balance")
+                            .unwrap_or(0);
+                        self.state.balances.insert(&owner, current_balance + payment)
+                            .expect("Failed to update balance");
+                        
                         let response = Message::ExtendFailed {
                             name,
                             reason: "Domain not registered".to_string(),
+                            refund_amount: payment,
                         };
                         self.runtime.send_message(requester_chain, response);
                     }
                     Some(record) if record.owner != owner => {
+                        // Credit the payment to owner's balance for refund
+                        let current_balance = self.state.balances.get(&owner).await
+                            .expect("Failed to read balance")
+                            .unwrap_or(0);
+                        self.state.balances.insert(&owner, current_balance + payment)
+                            .expect("Failed to update balance");
+                        
                         let response = Message::ExtendFailed {
                             name,
                             reason: "Not the domain owner".to_string(),
+                            refund_amount: payment,
+                        };
+                        self.runtime.send_message(requester_chain, response);
+                    }
+                    Some(record) if payment < required_fee => {
+                        // Insufficient payment - credit for refund (ignore record)
+                        let _ = record;
+                        let current_balance = self.state.balances.get(&owner).await
+                            .expect("Failed to read balance")
+                            .unwrap_or(0);
+                        self.state.balances.insert(&owner, current_balance + payment)
+                            .expect("Failed to update balance");
+                        
+                        let response = Message::ExtendFailed {
+                            name,
+                            reason: format!("Insufficient payment: required {}, got {}", required_fee, payment),
+                            refund_amount: payment,
                         };
                         self.runtime.send_message(requester_chain, response);
                     }
@@ -614,11 +738,11 @@ impl Contract for LineraNameSystemContract {
             }
             // Response messages - just log them
             Message::RegistrationSuccess { name } => { let _ = name; }
-            Message::RegistrationFailed { name, reason } => { let _ = (name, reason); }
+            Message::RegistrationFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
             Message::TransferSuccess { name, new_owner } => { let _ = (name, new_owner); }
             Message::TransferFailed { name, reason } => { let _ = (name, reason); }
             Message::ExtendSuccess { name, new_expiration } => { let _ = (name, new_expiration); }
-            Message::ExtendFailed { name, reason } => { let _ = (name, reason); }
+            Message::ExtendFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
             Message::SetPriceSuccess { name, price } => { let _ = (name, price); }
             Message::SetPriceFailed { name, reason } => { let _ = (name, reason); }
             Message::BuySuccess { name, new_owner } => { let _ = (name, new_owner); }

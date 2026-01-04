@@ -79,6 +79,9 @@ export default function CounterApp() {
 
   const applicationId = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
 
+  // Registration/Extension fee in LINERA (0.1 per year)
+  const REGISTRATION_FEE_LINERA = 0.1;
+
   useEffect(() => {
     setMounted(true);
     setChainConnected(lineraAdapter.isChainConnected());
@@ -388,6 +391,16 @@ export default function CounterApp() {
       setError("Registry chain ID not available yet");
       return;
     }
+
+    // Confirm with the user including the fee
+    if (
+      !confirm(
+        `Register ${domainName.trim()}.linera for ${REGISTRATION_FEE_LINERA} LINERA?`,
+      )
+    ) {
+      return;
+    }
+
     setIsRegistering(true);
     setError(null);
 
@@ -513,6 +526,18 @@ export default function CounterApp() {
   }
 
   async function handleExtendDomain(name: string) {
+    // Calculate total cost
+    const totalCost = (extendYears * REGISTRATION_FEE_LINERA).toFixed(1);
+
+    // Confirm with the user including the fee
+    if (
+      !confirm(
+        `Extend ${name}.linera by ${extendYears} year(s) for ${totalCost} LINERA?`,
+      )
+    ) {
+      return;
+    }
+
     setIsExtending(true);
     setError(null);
     try {
@@ -827,6 +852,10 @@ export default function CounterApp() {
                             <p className="text-green-600 dark:text-green-400">
                               Available!
                             </p>
+                            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                              Registration fee: {REGISTRATION_FEE_LINERA} LINERA
+                              (1 year)
+                            </p>
                           </div>
                           <button
                             type="button"
@@ -834,7 +863,9 @@ export default function CounterApp() {
                             disabled={isRegistering}
                             className="rounded-lg bg-sky-600 px-6 py-2 font-medium text-white transition-colors hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            {isRegistering ? "Registering..." : "Register"}
+                            {isRegistering
+                              ? "Registering..."
+                              : `Register (${REGISTRATION_FEE_LINERA} LINERA)`}
                           </button>
                         </div>
                       )}
@@ -1105,6 +1136,9 @@ export default function CounterApp() {
                     <h3 className="mb-2 font-semibold text-zinc-900 dark:text-white">
                       Extend Registration
                     </h3>
+                    <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      {REGISTRATION_FEE_LINERA} LINERA per year
+                    </p>
                     <div className="flex gap-2">
                       <input
                         type="number"
@@ -1117,7 +1151,9 @@ export default function CounterApp() {
                         className="w-24 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-zinc-600 dark:bg-zinc-900 dark:text-white"
                       />
                       <span className="self-center text-zinc-600 dark:text-zinc-400">
-                        year(s)
+                        year(s) ={" "}
+                        {(extendYears * REGISTRATION_FEE_LINERA).toFixed(1)}{" "}
+                        LINERA
                       </span>
                       <button
                         type="button"
