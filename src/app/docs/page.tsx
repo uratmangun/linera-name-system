@@ -1,6 +1,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { DOCS_MARKDOWN } from "@/lib/docs-content";
+import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 
 export const metadata = {
   title: "API Documentation | Linera Name System",
@@ -46,9 +47,7 @@ export default function DocsPage() {
       {/* Documentation Content */}
       <main className="pt-24 pb-16">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
-            {DOCS_MARKDOWN}
-          </pre>
+          <MarkdownRenderer content={DOCS_MARKDOWN} />
         </div>
       </main>
 

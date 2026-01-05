@@ -20,12 +20,17 @@
     "@dynamic-labs/ethereum": "^4.47.3",
     "@dynamic-labs/sdk-react-core": "^4.47.3",
     "@linera/client": "^0.15.6",
+    "@tailwindcss/typography": "^0.5.19",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "ethers": "^6.15.0",
     "framer-motion": "^12.23.26",
     "lucide-react": "^0.562.0",
     "next": "16.0.9",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.0",
+    "remark-gfm": "^4.0.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {
