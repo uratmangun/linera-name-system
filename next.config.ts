@@ -5,6 +5,15 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  // Rewrite /docs.md to /raw-docs (Next.js doesn't support dots in folder names)
+  async rewrites() {
+    return [
+      {
+        source: "/docs.md",
+        destination: "/raw-docs",
+      },
+    ];
+  },
   // Required for SharedArrayBuffer support (Linera WASM)
   async headers() {
     return [
