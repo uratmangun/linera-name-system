@@ -319,6 +319,9 @@ export default function LandingPage() {
               >
                 Features
               </a>
+              <a href="/docs" className="hover:text-sky-500 transition-colors">
+                Docs
+              </a>
               {isConnected && (
                 <a
                   href="#my-domains"
@@ -349,6 +352,9 @@ export default function LandingPage() {
           <div className="md:hidden bg-white dark:bg-black border-b border-zinc-200 dark:border-zinc-800 p-4 space-y-4">
             <a href="#features" className="block text-lg">
               Features
+            </a>
+            <a href="/docs" className="block text-lg">
+              Docs
             </a>
             {isConnected && (
               <a href="#my-domains" className="block text-lg">

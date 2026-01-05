@@ -1,0 +1,6330 @@
+## User
+
+[@chat-context](file:///home/uratmangun/CascadeProjects/linera-name-system-worktree/chat-context)
+ you can read the context here, so basically we build a linera name system, kinda like domain name system for linera blockchain, what different between linera and other blockchain is every new wallet has its own chain my question basically if you take a look at our code or the chat-context i gave you, there is no way we can check the state of another chain via smart contract lets say i want to check list of domain we need to request graphql from linera service, so can you now ask deepwiki repo `linera-io/linera-protocol` whether we can make another chain a temporary owner of an application id so that we can check the state of other owner or if we can make a chain just have a read only access to another chain is it possible please ask it
+
+## Assistant
+
+<thinking>
+**Examining Inter-Chain Communication**
+
+I'm currently investigating cross-chain interactions within Linera, particularly regarding a Name System app. I'm exploring whether a temporary ownership transfer or a read-only access mechanism to another chain's state is feasible. This approach seeks to ensure efficient state checks across multiple chains.
+
+
+**Diving into Name System Logic**
+
+I'm now examining the `linera_name_system` contract within the local codebase. My focus is understanding how it manages state and domain registration. The goal is to establish a solid foundation before I start probing the Linera protocol repo for answers regarding cross-chain state access. Once I understand the existing approach, I'll formulate precise questions for DeepWiki to get more insight into cross-chain state handling.
+
+
+
+</thinking>
+
+**Tool Call: List files in the contract source directory to understand the structure.**
+Status: Completed
+
+contracts/linera_name_system/src:
+contract.rs
+lib.rs
+service.rs
+state.rs
+
+
+**Tool Call: contracts/linera_name_system/src/state.rs**
+Status: Completed
+
+<file>
+00001| use linera_sdk::linera_base_types::ChainId;
+00002| use linera_sdk::views::{MapView, RootView, ViewStorageContext};
+00003| use serde::{Deserialize, Serialize};
+00004| 
+00005| /// Domain registration information
+00006| #[derive(Clone, Debug, Deserialize, Serialize)]
+00007| pub struct DomainRecord {
+00008|     /// Owner address
+00009|     pub owner: String,
+00010|     /// Chain ID of the owner
+00011|     pub owner_chain_id: ChainId,
+00012|     /// Expiration timestamp (microseconds since epoch)
+00013|     pub expiration: u64,
+00014|     /// Price for sale (0 means not for sale)
+00015|     pub price: u128,
+00016|     /// DNS-like value (can be any text)
+00017|     pub value: String,
+00018| }
+00019| 
+00020| /// The application state storing domain registrations.
+00021| #[derive(RootView)]
+00022| #[view(context = ViewStorageContext)]
+00023| pub struct LineraNameSystemState {
+00024|     /// Map of domain names to domain records (global registry on registry chain)
+00025|     pub domains: MapView<String, DomainRecord>,
+00026|     /// Claimable balances for domain sellers (owner address -> amount in attos)
+00027|     /// Tokens are held in escrow on the registry chain until withdrawn
+00028|     pub balances: MapView<String, u128>,
+00029| }
+00030| 
+
+(End of file - total 30 lines)
+</file>
+
+**Tool Call: contracts/linera_name_system/src/contract.rs**
+Status: Completed
+
+<file>
+00001| #![cfg_attr(target_arch = "wasm32", no_main)]
+00002| 
+00003| mod state;
+00004| 
+00005| use linera_sdk::{
+00006|     abi::WithContractAbi,
+00007|     linera_base_types::{Account, AccountOwner, Amount},
+00008|     views::{RootView, View},
+00009|     Contract, ContractRuntime,
+00010| };
+00011| 
+00012| use linera_name_system::{Message, Operation};
+00013| use self::state::{LineraNameSystemState, DomainRecord};
+00014| 
+00015| /// One year in microseconds (365 days)
+00016| const ONE_YEAR_MICROS: u64 = 365 * 24 * 60 * 60 * 1_000_000;
+00017| 
+00018| /// Registration/Extension fee: 0.1 LINERA per year (in attos, 10^18 attos = 1 LINERA)
+00019| const REGISTRATION_FEE: u128 = 100_000_000_000_000_000;
+00020| 
+00021| pub struct LineraNameSystemContract {
+00022|     state: LineraNameSystemState,
+00023|     runtime: ContractRuntime<Self>,
+00024| }
+00025| 
+00026| linera_sdk::contract!(LineraNameSystemContract);
+00027| 
+00028| impl WithContractAbi for LineraNameSystemContract {
+00029|     type Abi = linera_name_system::LineraNameSystemAbi;
+00030| }
+00031| 
+00032| impl LineraNameSystemContract {
+00033|     /// Get the registry chain ID - this is always the chain where the application was created
+00034|     fn registry_chain_id(&mut self) -> linera_sdk::linera_base_types::ChainId {
+00035|         self.runtime.application_creator_chain_id()
+00036|     }
+00037| 
+00038|     /// Get current timestamp in microseconds
+00039|     fn current_time(&mut self) -> u64 {
+00040|         self.runtime.system_time().micros()
+00041|     }
+00042| 
+00043|     /// Check if a domain is expired
+00044|     fn is_expired(&mut self, record: &DomainRecord) -> bool {
+00045|         self.current_time() > record.expiration
+00046|     }
+00047| 
+00048|     /// Convert u128 price to Amount
+00049|     fn amount_from_u128(value: u128) -> Amount {
+00050|         Amount::from_attos(value)
+00051|     }
+00052| 
+00053|     /// Convert Amount to u128
+00054|     #[allow(dead_code)]
+00055|     fn amount_to_u128(amount: Amount) -> u128 {
+00056|         amount.to_attos()
+00057|     }
+00058| }
+00059| 
+00060| impl Contract for LineraNameSystemContract {
+00061|     type Message = Message;
+00062|     type Parameters = ();
+00063|     type InstantiationArgument = ();
+00064|     type EventValue = ();
+00065| 
+00066|     async fn load(runtime: ContractRuntime<Self>) -> Self {
+00067|         let state = LineraNameSystemState::load(runtime.root_view_storage_context())
+00068|             .await
+00069|             .expect("Failed to load state");
+00070|         LineraNameSystemContract { state, runtime }
+00071|     }
+00072| 
+00073|     async fn instantiate(&mut self, _argument: Self::InstantiationArgument) {
+00074|         // Nothing to initialize - registry chain is derived from application_id
+00075|     }
+00076| 
+00077|     async fn execute_operation(&mut self, operation: Self::Operation) -> Self::Response {
+00078|         let signer = self.runtime.authenticated_signer()
+00079|             .expect("Operation must be signed");
+00080|         let owner = signer.to_string().to_lowercase();
+00081|         
+00082|         let current_chain = self.runtime.chain_id();
+00083|         let registry_chain_id = self.registry_chain_id();
+00084| 
+00085|         match operation {
+00086|             Operation::Register { name } => {
+00087|                 // Validate domain name
+00088|                 assert!(!name.is_empty(), "Domain name cannot be empty");
+00089|                 assert!(name.len() <= 63, "Domain name too long");
+00090|                 assert!(
+00091|                     name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+00092|                     "Invalid characters in domain name"
+00093|                 );
+00094| 
+00095|                 // Get app account for receiving the registration fee
+00096|                 let app_id = self.runtime.application_id();
+00097|                 let app_owner: AccountOwner = app_id.forget_abi().into();
+00098| 
+00099|                 if current_chain == registry_chain_id {
+00100|                     // We ARE the registry chain - register directly
+00101|                     let existing = self.state.domains.get(&name).await.expect("Failed to read state");
+00102|                     
+00103|                     // Check if domain exists and is not expired
+00104|                     if let Some(record) = existing {
+00105|                         if !self.is_expired(&record) {
+00106|                             panic!("Domain already registered and not expired");
+00107|                         }
+00108|                     }
+00109|                     
+00110|                     // Transfer registration fee from user to application account
+00111|                     let destination = Account {
+00112|                         chain_id: current_chain,
+00113|                         owner: app_owner,
+00114|                     };
+00115|                     self.runtime.transfer(
+00116|                         AccountOwner::CHAIN,
+00117|                         destination,
+00118|                         Self::amount_from_u128(REGISTRATION_FEE),
+00119|                     );
+00120|                     
+00121|                     // Register the domain with 1 year expiration
+00122|                     let expiration = self.current_time() + ONE_YEAR_MICROS;
+00123|                     let record = DomainRecord {
+00124|                         owner,
+00125|                         owner_chain_id: current_chain,
+00126|                         expiration,
+00127|                         price: 0,
+00128|                         value: String::new(),
+00129|                     };
+00130|                     self.state.domains.insert(&name, record).expect("Failed to register domain");
+00131|                 } else {
+00132|                     // Transfer registration fee to application account on registry chain
+00133|                     let destination = Account {
+00134|                         chain_id: registry_chain_id,
+00135|                         owner: app_owner,
+00136|                     };
+00137|                     self.runtime.transfer(
+00138|                         AccountOwner::CHAIN,
+00139|                         destination,
+00140|                         Self::amount_from_u128(REGISTRATION_FEE),
+00141|                     );
+00142|                     
+00143|                     // Send registration request to registry chain with payment info
+00144|                     let message = Message::RequestRegister {
+00145|                         name,
+00146|                         owner,
+00147|                         requester_chain: current_chain,
+00148|                         payment: REGISTRATION_FEE,
+00149|                     };
+00150|                     self.runtime.send_message(registry_chain_id, message);
+00151|                 }
+00152|             }
+00153|             Operation::Transfer { name, new_owner } => {
+00154|                 if current_chain == registry_chain_id {
+00155|                     // We ARE the registry chain - transfer directly
+00156|                     let mut record = self.state.domains.get(&name).await
+00157|                         .expect("Failed to read state")
+00158|                         .expect("Domain not registered");
+00159|                     
+00160|                     assert!(!self.is_expired(&record), "Domain has expired");
+00161|                     assert_eq!(record.owner, owner, "Not the domain owner");
+00162|                     
+00163|                     record.owner = new_owner;
+00164|                     record.price = 0; // Reset price on transfer
+00165|                     self.state.domains.insert(&name, record).expect("Failed to transfer domain");
+00166|                 } else {
+00167|                     // Send transfer request to registry chain
+00168|                     let message = Message::RequestTransfer {
+00169|                         name,
+00170|                         new_owner,
+00171|                         current_owner: owner,
+00172|                         requester_chain: current_chain,
+00173|                     };
+00174|                     self.runtime.send_message(registry_chain_id, message);
+00175|                 }
+00176|             }
+00177|             Operation::Extend { name, years } => {
+00178|                 assert!(years > 0 && years <= 10, "Years must be between 1 and 10");
+00179|                 
+00180|                 // Calculate total extension fee
+00181|                 let total_fee = (years as u128) * REGISTRATION_FEE;
+00182|                 
+00183|                 // Get app account for receiving the extension fee
+00184|                 let app_id = self.runtime.application_id();
+00185|                 let app_owner: AccountOwner = app_id.forget_abi().into();
+00186|                 
+00187|                 if current_chain == registry_chain_id {
+00188|                     let mut record = self.state.domains.get(&name).await
+00189|                         .expect("Failed to read state")
+00190|                         .expect("Domain not registered");
+00191|                     
+00192|                     assert_eq!(record.owner, owner, "Not the domain owner");
+00193|                     
+00194|                     // Transfer extension fee from user to application account
+00195|                     let destination = Account {
+00196|                         chain_id: current_chain,
+00197|                         owner: app_owner,
+00198|                     };
+00199|                     self.runtime.transfer(
+00200|                         AccountOwner::CHAIN,
+00201|                         destination,
+00202|                         Self::amount_from_u128(total_fee),
+00203|                     );
+00204|                     
+00205|                     // Extend from current expiration or current time if expired
+00206|                     let base_time = if self.is_expired(&record) {
+00207|                         self.current_time()
+00208|                     } else {
+00209|                         record.expiration
+00210|                     };
+00211|                     record.expiration = base_time + (years as u64 * ONE_YEAR_MICROS);
+00212|                     self.state.domains.insert(&name, record).expect("Failed to extend domain");
+00213|                 } else {
+00214|                     // Transfer extension fee to application account on registry chain
+00215|                     let destination = Account {
+00216|                         chain_id: registry_chain_id,
+00217|                         owner: app_owner,
+00218|                     };
+00219|                     self.runtime.transfer(
+00220|                         AccountOwner::CHAIN,
+00221|                         destination,
+00222|                         Self::amount_from_u128(total_fee),
+00223|                     );
+00224|                     
+00225|                     let message = Message::RequestExtend {
+00226|                         name,
+00227|                         owner,
+00228|                         years,
+00229|                         requester_chain: current_chain,
+00230|                         payment: total_fee,
+00231|                     };
+00232|                     self.runtime.send_message(registry_chain_id, message);
+00233|                 }
+00234|             }
+00235|             Operation::SetPrice { name, price } => {
+00236|                 if current_chain == registry_chain_id {
+00237|                     let mut record = self.state.domains.get(&name).await
+00238|                         .expect("Failed to read state")
+00239|                         .expect("Domain not registered");
+00240|                     
+00241|                     assert!(!self.is_expired(&record), "Domain has expired");
+00242|                     assert_eq!(record.owner, owner, "Not the domain owner");
+00243|                     
+00244|                     record.price = price;
+00245|                     self.state.domains.insert(&name, record).expect("Failed to set price");
+00246|                 } else {
+00247|                     let message = Message::RequestSetPrice {
+00248|                         name,
+00249|                         owner,
+00250|                         price,
+00251|                         requester_chain: current_chain,
+00252|                     };
+00253|                     self.runtime.send_message(registry_chain_id, message);
+00254|                 }
+00255|             }
+00256|             Operation::Buy { name, expected_price } => {
+00257|                 // For buying domains, we need to handle payment
+00258|                 // On the registry chain, we can do it directly
+00259|                 // For cross-chain, we use the expected_price from frontend query
+00260|                 
+00261|                 assert!(expected_price > 0, "Price must be greater than 0");
+00262|                 
+00263|                 if current_chain == registry_chain_id {
+00264|                     // Direct purchase on registry chain
+00265|                     let record = self.state.domains.get(&name).await
+00266|                         .expect("Failed to read state")
+00267|                         .expect("Domain not registered");
+00268|                     
+00269|                     assert!(!self.is_expired(&record), "Domain has expired");
+00270|                     assert!(record.price > 0, "Domain is not for sale");
+00271|                     assert_ne!(record.owner, owner, "Cannot buy your own domain");
+00272|                     assert_eq!(record.price, expected_price, "Price has changed, please refresh");
+00273|                     
+00274|                     let price = record.price;
+00275|                     let previous_owner = record.owner.clone();
+00276|                     
+00277|                     // Transfer payment from buyer to application (escrow)
+00278|                     // The buyer's tokens go to the application's account on this chain
+00279|                     // Use AccountOwner::CHAIN as source because user's tokens are in the chain's balance
+00280|                     let app_id = self.runtime.application_id();
+00281|                     let app_owner: AccountOwner = app_id.forget_abi().into();
+00282|                     let destination = Account {
+00283|                         chain_id: current_chain,
+00284|                         owner: app_owner,
+00285|                     };
+00286|                     
+00287|                     self.runtime.transfer(
+00288|                         AccountOwner::CHAIN,  // source: the chain's balance (where user tokens are)
+00289|                         destination,
+00290|                         Self::amount_from_u128(price),
+00291|                     );
+00292|                     
+00293|                     // Credit the previous owner's balance for later withdrawal
+00294|                     let current_balance = self.state.balances.get(&previous_owner).await
+00295|                         .expect("Failed to read balance")
+00296|                         .unwrap_or(0);
+00297|                     self.state.balances.insert(&previous_owner, current_balance + price)
+00298|                         .expect("Failed to update balance");
+00299|                     
+00300|                     // Transfer ownership
+00301|                     let mut updated_record = record;
+00302|                     updated_record.owner = owner;
+00303|                     updated_record.owner_chain_id = current_chain;
+00304|                     updated_record.price = 0; // Reset price after purchase
+00305|                     self.state.domains.insert(&name, updated_record).expect("Failed to buy domain");
+00306|                 } else {
+00307|                     // Cross-chain purchase:
+00308|                     // 1. Transfer tokens from buyer's chain to application account on registry chain
+00309|                     // 2. Send RequestBuy message with payment amount
+00310|                     // The frontend queries the price first and passes it as expected_price
+00311|                     
+00312|                     let app_id = self.runtime.application_id();
+00313|                     let app_owner: AccountOwner = app_id.forget_abi().into();
+00314|                     
+00315|                     // Transfer tokens to the application's account on the registry chain
+00316|                     // Use AccountOwner::CHAIN as source because user's tokens are in the chain's balance
+00317|                     let destination = Account {
+00318|                         chain_id: registry_chain_id,
+00319|                         owner: app_owner,
+00320|                     };
+00321|                     
+00322|                     self.runtime.transfer(
+00323|                         AccountOwner::CHAIN,  // source: the chain's balance (where user tokens are)
+00324|                         destination,
+00325|                         Self::amount_from_u128(expected_price),
+00326|                     );
+00327|                     
+00328|                     // Send the buy request with the payment amount
+00329|                     let message = Message::RequestBuy {
+00330|                         name,
+00331|                         buyer: owner.clone(),
+00332|                         buyer_chain: current_chain,
+00333|                         payment: expected_price,
+00334|                     };
+00335|                     
+00336|                     self.runtime.send_message(registry_chain_id, message);
+00337|                 }
+00338|             }
+00339|             Operation::SetValue { name, value } => {
+00340|                 assert!(value.len() <= 1024, "Value too long (max 1024 characters)");
+00341|                 
+00342|                 if current_chain == registry_chain_id {
+00343|                     let mut record = self.state.domains.get(&name).await
+00344|                         .expect("Failed to read state")
+00345|                         .expect("Domain not registered");
+00346|                     
+00347|                     assert!(!self.is_expired(&record), "Domain has expired");
+00348|                     assert_eq!(record.owner, owner, "Not the domain owner");
+00349|                     
+00350|                     record.value = value;
+00351|                     self.state.domains.insert(&name, record).expect("Failed to set value");
+00352|                 } else {
+00353|                     let message = Message::RequestSetValue {
+00354|                         name,
+00355|                         owner,
+00356|                         value,
+00357|                         requester_chain: current_chain,
+00358|                     };
+00359|                     self.runtime.send_message(registry_chain_id, message);
+00360|                 }
+00361|             }
+00362|             Operation::Withdraw => {
+00363|                 if current_chain == registry_chain_id {
+00364|                     // Direct withdrawal on registry chain
+00365|                     let balance = self.state.balances.get(&owner).await
+00366|                         .expect("Failed to read balance")
+00367|                         .unwrap_or(0);
+00368|                     
+00369|                     assert!(balance > 0, "No balance to withdraw");
+00370|                     
+00371|                     // Transfer from application to the user
+00372|                     let app_id = self.runtime.application_id();
+00373|                     let app_owner: AccountOwner = app_id.forget_abi().into();
+00374|                     let destination = Account {
+00375|                         chain_id: current_chain,
+00376|                         owner: signer,  // Send to the authenticated signer
+00377|                     };
+00378|                     
+00379|                     self.runtime.transfer(
+00380|                         app_owner,  // source: the application
+00381|                         destination,
+00382|                         Self::amount_from_u128(balance),
+00383|                     );
+00384|                     
+00385|                     // Clear the balance
+00386|                     self.state.balances.remove(&owner).expect("Failed to clear balance");
+00387|                 } else {
+00388|                     // Cross-chain withdrawal
+00389|                     let message = Message::RequestWithdraw {
+00390|                         owner,
+00391|                         requester_chain: current_chain,
+00392|                     };
+00393|                     self.runtime.send_message(registry_chain_id, message);
+00394|                 }
+00395|             }
+00396|         }
+00397|     }
+00398| 
+00399|     async fn execute_message(&mut self, message: Self::Message) {
+00400|         let current_chain = self.runtime.chain_id();
+00401|         let registry_chain_id = self.registry_chain_id();
+00402|         let current_time = self.current_time();
+00403| 
+00404|         match message {
+00405|             Message::RequestRegister { name, owner, requester_chain, payment } => {
+00406|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process registrations");
+00407|                 
+00408|                 // Verify the payment matches the required fee
+00409|                 let required_fee = REGISTRATION_FEE;
+00410|                 
+00411|                 let existing = self.state.domains.get(&name).await.expect("Failed to read state");
+00412|                 
+00413|                 // Check if domain exists and is not expired
+00414|                 if let Some(record) = existing {
+00415|                     if current_time <= record.expiration {
+00416|                         // Registration failed - credit the payment to owner's balance for refund
+00417|                         let current_balance = self.state.balances.get(&owner).await
+00418|                             .expect("Failed to read balance")
+00419|                             .unwrap_or(0);
+00420|                         self.state.balances.insert(&owner, current_balance + payment)
+00421|                             .expect("Failed to update balance");
+00422|                         
+00423|                         let response = Message::RegistrationFailed {
+00424|                             name,
+00425|                             reason: "Domain already registered and not expired".to_string(),
+00426|                             refund_amount: payment,
+00427|                         };
+00428|                         self.runtime.send_message(requester_chain, response);
+00429|                         return;
+00430|                     }
+00431|                 }
+00432|                 
+00433|                 // Verify payment is sufficient
+00434|                 if payment < required_fee {
+00435|                     // Credit the payment to owner's balance for refund
+00436|                     let current_balance = self.state.balances.get(&owner).await
+00437|                         .expect("Failed to read balance")
+00438|                         .unwrap_or(0);
+00439|                     self.state.balances.insert(&owner, current_balance + payment)
+00440|                         .expect("Failed to update balance");
+00441|                     
+00442|                     let response = Message::RegistrationFailed {
+00443|                         name,
+00444|                         reason: format!("Insufficient payment: required {}, got {}", required_fee, payment),
+00445|                         refund_amount: payment,
+00446|                     };
+00447|                     self.runtime.send_message(requester_chain, response);
+00448|                     return;
+00449|                 }
+00450|                 
+00451|                 // Register the domain with 1 year expiration
+00452|                 let expiration = current_time + ONE_YEAR_MICROS;
+00453|                 let record = DomainRecord {
+00454|                     owner,
+00455|                     owner_chain_id: requester_chain,
+00456|                     expiration,
+00457|                     price: 0,
+00458|                     value: String::new(),
+00459|                 };
+00460|                 self.state.domains.insert(&name, record).expect("Failed to register domain");
+00461|                 let response = Message::RegistrationSuccess { name };
+00462|                 self.runtime.send_message(requester_chain, response);
+00463|             }
+00464|             Message::RequestTransfer { name, new_owner, current_owner, requester_chain } => {
+00465|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process transfers");
+00466|                 
+00467|                 let stored = self.state.domains.get(&name).await.expect("Failed to read state");
+00468|                 match stored {
+00469|                     None => {
+00470|                         let response = Message::TransferFailed {
+00471|                             name,
+00472|                             reason: "Domain not registered".to_string(),
+00473|                         };
+00474|                         self.runtime.send_message(requester_chain, response);
+00475|                     }
+00476|                     Some(record) if current_time > record.expiration => {
+00477|                         let response = Message::TransferFailed {
+00478|                             name,
+00479|                             reason: "Domain has expired".to_string(),
+00480|                         };
+00481|                         self.runtime.send_message(requester_chain, response);
+00482|                     }
+00483|                     Some(record) if record.owner != current_owner => {
+00484|                         let response = Message::TransferFailed {
+00485|                             name,
+00486|                             reason: "Not the domain owner".to_string(),
+00487|                         };
+00488|                         self.runtime.send_message(requester_chain, response);
+00489|                     }
+00490|                     Some(mut record) => {
+00491|                         record.owner = new_owner.clone();
+00492|                         record.price = 0;
+00493|                         self.state.domains.insert(&name, record).expect("Failed to transfer domain");
+00494|                         let response = Message::TransferSuccess { name, new_owner };
+00495|                         self.runtime.send_message(requester_chain, response);
+00496|                     }
+00497|                 }
+00498|             }
+00499|             Message::RequestExtend { name, owner, years, requester_chain, payment } => {
+00500|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process extensions");
+00501|                 
+00502|                 // Calculate required fee
+00503|                 let required_fee = (years as u128) * REGISTRATION_FEE;
+00504|                 
+00505|                 let stored = self.state.domains.get(&name).await.expect("Failed to read state");
+00506|                 match stored {
+00507|                     None => {
+00508|                         // Credit the payment to owner's balance for refund
+00509|                         let current_balance = self.state.balances.get(&owner).await
+00510|                             .expect("Failed to read balance")
+00511|                             .unwrap_or(0);
+00512|                         self.state.balances.insert(&owner, current_balance + payment)
+00513|                             .expect("Failed to update balance");
+00514|                         
+00515|                         let response = Message::ExtendFailed {
+00516|                             name,
+00517|                             reason: "Domain not registered".to_string(),
+00518|                             refund_amount: payment,
+00519|                         };
+00520|                         self.runtime.send_message(requester_chain, response);
+00521|                     }
+00522|                     Some(record) if record.owner != owner => {
+00523|                         // Credit the payment to owner's balance for refund
+00524|                         let current_balance = self.state.balances.get(&owner).await
+00525|                             .expect("Failed to read balance")
+00526|                             .unwrap_or(0);
+00527|                         self.state.balances.insert(&owner, current_balance + payment)
+00528|                             .expect("Failed to update balance");
+00529|                         
+00530|                         let response = Message::ExtendFailed {
+00531|                             name,
+00532|                             reason: "Not the domain owner".to_string(),
+00533|                             refund_amount: payment,
+00534|                         };
+00535|                         self.runtime.send_message(requester_chain, response);
+00536|                     }
+00537|                     Some(record) if payment < required_fee => {
+00538|                         // Insufficient payment - credit for refund (ignore record)
+00539|                         let _ = record;
+00540|                         let current_balance = self.state.balances.get(&owner).await
+00541|                             .expect("Failed to read balance")
+00542|                             .unwrap_or(0);
+00543|                         self.state.balances.insert(&owner, current_balance + payment)
+00544|                             .expect("Failed to update balance");
+00545|                         
+00546|                         let response = Message::ExtendFailed {
+00547|                             name,
+00548|                             reason: format!("Insufficient payment: required {}, got {}", required_fee, payment),
+00549|                             refund_amount: payment,
+00550|                         };
+00551|                         self.runtime.send_message(requester_chain, response);
+00552|                     }
+00553|                     Some(mut record) => {
+00554|                         let base_time = if current_time > record.expiration {
+00555|                             current_time
+00556|                         } else {
+00557|                             record.expiration
+00558|                         };
+00559|                         record.expiration = base_time + (years as u64 * ONE_YEAR_MICROS);
+00560|                         let new_expiration = record.expiration;
+00561|                         self.state.domains.insert(&name, record).expect("Failed to extend domain");
+00562|                         let response = Message::ExtendSuccess { name, new_expiration };
+00563|                         self.runtime.send_message(requester_chain, response);
+00564|                     }
+00565|                 }
+00566|             }
+00567|             Message::RequestSetPrice { name, owner, price, requester_chain } => {
+00568|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process price updates");
+00569|                 
+00570|                 let stored = self.state.domains.get(&name).await.expect("Failed to read state");
+00571|                 match stored {
+00572|                     None => {
+00573|                         let response = Message::SetPriceFailed {
+00574|                             name,
+00575|                             reason: "Domain not registered".to_string(),
+00576|                         };
+00577|                         self.runtime.send_message(requester_chain, response);
+00578|                     }
+00579|                     Some(record) if current_time > record.expiration => {
+00580|                         let response = Message::SetPriceFailed {
+00581|                             name,
+00582|                             reason: "Domain has expired".to_string(),
+00583|                         };
+00584|                         self.runtime.send_message(requester_chain, response);
+00585|                     }
+00586|                     Some(record) if record.owner != owner => {
+00587|                         let response = Message::SetPriceFailed {
+00588|                             name,
+00589|                             reason: "Not the domain owner".to_string(),
+00590|                         };
+00591|                         self.runtime.send_message(requester_chain, response);
+00592|                     }
+00593|                     Some(mut record) => {
+00594|                         record.price = price;
+00595|                         self.state.domains.insert(&name, record).expect("Failed to set price");
+00596|                         let response = Message::SetPriceSuccess { name, price };
+00597|                         self.runtime.send_message(requester_chain, response);
+00598|                     }
+00599|                 }
+00600|             }
+00601|             Message::RequestBuy { name, buyer, buyer_chain, payment } => {
+00602|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process purchases");
+00603|                 
+00604|                 let stored = self.state.domains.get(&name).await.expect("Failed to read state");
+00605|                 match stored {
+00606|                     None => {
+00607|                         let response = Message::BuyFailed {
+00608|                             name,
+00609|                             reason: "Domain not registered".to_string(),
+00610|                             refund_amount: payment,
+00611|                         };
+00612|                         self.runtime.send_message(buyer_chain, response);
+00613|                     }
+00614|                     Some(record) if current_time > record.expiration => {
+00615|                         let response = Message::BuyFailed {
+00616|                             name,
+00617|                             reason: "Domain has expired".to_string(),
+00618|                             refund_amount: payment,
+00619|                         };
+00620|                         self.runtime.send_message(buyer_chain, response);
+00621|                     }
+00622|                     Some(record) if record.price == 0 => {
+00623|                         let response = Message::BuyFailed {
+00624|                             name,
+00625|                             reason: "Domain is not for sale".to_string(),
+00626|                             refund_amount: payment,
+00627|                         };
+00628|                         self.runtime.send_message(buyer_chain, response);
+00629|                     }
+00630|                     Some(record) if record.owner == buyer => {
+00631|                         let response = Message::BuyFailed {
+00632|                             name,
+00633|                             reason: "Cannot buy your own domain".to_string(),
+00634|                             refund_amount: payment,
+00635|                         };
+00636|                         self.runtime.send_message(buyer_chain, response);
+00637|                     }
+00638|                     Some(record) if payment < record.price => {
+00639|                         let response = Message::BuyFailed {
+00640|                             name,
+00641|                             reason: format!("Insufficient payment: required {}, got {}", record.price, payment),
+00642|                             refund_amount: payment,
+00643|                         };
+00644|                         self.runtime.send_message(buyer_chain, response);
+00645|                     }
+00646|                     Some(mut record) => {
+00647|                         let price = record.price;
+00648|                         let previous_owner = record.owner.clone();
+00649|                         
+00650|                         // Credit the previous owner's balance for later withdrawal
+00651|                         let current_balance = self.state.balances.get(&previous_owner).await
+00652|                             .expect("Failed to read balance")
+00653|                             .unwrap_or(0);
+00654|                         self.state.balances.insert(&previous_owner, current_balance + price)
+00655|                             .expect("Failed to update balance");
+00656|                         
+00657|                         // Transfer ownership
+00658|                         record.owner = buyer.clone();
+00659|                         record.owner_chain_id = buyer_chain;
+00660|                         record.price = 0;
+00661|                         self.state.domains.insert(&name, record).expect("Failed to buy domain");
+00662|                         
+00663|                         let response = Message::BuySuccess { name, new_owner: buyer };
+00664|                         self.runtime.send_message(buyer_chain, response);
+00665|                     }
+00666|                 }
+00667|             }
+00668|             Message::RequestSetValue { name, owner, value, requester_chain } => {
+00669|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process value updates");
+00670|                 
+00671|                 let stored = self.state.domains.get(&name).await.expect("Failed to read state");
+00672|                 match stored {
+00673|                     None => {
+00674|                         let response = Message::SetValueFailed {
+00675|                             name,
+00676|                             reason: "Domain not registered".to_string(),
+00677|                         };
+00678|                         self.runtime.send_message(requester_chain, response);
+00679|                     }
+00680|                     Some(record) if current_time > record.expiration => {
+00681|                         let response = Message::SetValueFailed {
+00682|                             name,
+00683|                             reason: "Domain has expired".to_string(),
+00684|                         };
+00685|                         self.runtime.send_message(requester_chain, response);
+00686|                     }
+00687|                     Some(record) if record.owner != owner => {
+00688|                         let response = Message::SetValueFailed {
+00689|                             name,
+00690|                             reason: "Not the domain owner".to_string(),
+00691|                         };
+00692|                         self.runtime.send_message(requester_chain, response);
+00693|                     }
+00694|                     Some(mut record) => {
+00695|                         record.value = value;
+00696|                         self.state.domains.insert(&name, record).expect("Failed to set value");
+00697|                         let response = Message::SetValueSuccess { name };
+00698|                         self.runtime.send_message(requester_chain, response);
+00699|                     }
+00700|                 }
+00701|             }
+00702|             Message::RequestWithdraw { owner, requester_chain } => {
+00703|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process withdrawals");
+00704|                 
+00705|                 let balance = self.state.balances.get(&owner).await
+00706|                     .expect("Failed to read balance")
+00707|                     .unwrap_or(0);
+00708|                 
+00709|                 if balance == 0 {
+00710|                     let response = Message::WithdrawFailed {
+00711|                         reason: "No balance to withdraw".to_string(),
+00712|                     };
+00713|                     self.runtime.send_message(requester_chain, response);
+00714|                     return;
+00715|                 }
+00716|                 
+00717|                 // Transfer from application to the requester chain
+00718|                 let app_id = self.runtime.application_id();
+00719|                 let app_owner: AccountOwner = app_id.forget_abi().into();
+00720|                 
+00721|                 // For cross-chain transfer, we send to the chain's account
+00722|                 let destination = Account {
+00723|                     chain_id: requester_chain,
+00724|                     owner: AccountOwner::CHAIN,  // Chain account
+00725|                 };
+00726|                 
+00727|                 self.runtime.transfer(
+00728|                     app_owner,  // source: the application
+00729|                     destination,
+00730|                     Self::amount_from_u128(balance),
+00731|                 );
+00732|                 
+00733|                 // Clear the balance
+00734|                 self.state.balances.remove(&owner).expect("Failed to clear balance");
+00735|                 
+00736|                 let response = Message::WithdrawSuccess { amount: balance };
+00737|                 self.runtime.send_message(requester_chain, response);
+00738|             }
+00739|             // Response messages - just log them
+00740|             Message::RegistrationSuccess { name } => { let _ = name; }
+00741|             Message::RegistrationFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
+00742|             Message::TransferSuccess { name, new_owner } => { let _ = (name, new_owner); }
+00743|             Message::TransferFailed { name, reason } => { let _ = (name, reason); }
+00744|             Message::ExtendSuccess { name, new_expiration } => { let _ = (name, new_expiration); }
+00745|             Message::ExtendFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
+00746|             Message::SetPriceSuccess { name, price } => { let _ = (name, price); }
+00747|             Message::SetPriceFailed { name, reason } => { let _ = (name, reason); }
+00748|             Message::BuySuccess { name, new_owner } => { let _ = (name, new_owner); }
+00749|             Message::BuyFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
+00750|             Message::SetValueSuccess { name } => { let _ = name; }
+00751|             Message::SetValueFailed { name, reason } => { let _ = (name, reason); }
+00752|             Message::WithdrawSuccess { amount } => { let _ = amount; }
+00753|             Message::WithdrawFailed { reason } => { let _ = reason; }
+00754|         }
+00755|     }
+00756| 
+00757|     async fn store(mut self) {
+00758|         self.state.save().await.expect("Failed to save state");
+00759|     }
+00760| }
+00761| 
+
+(End of file - total 761 lines)
+</file>
+
+**Tool Call: contracts/linera_name_system/src/service.rs**
+Status: Completed
+
+<file>
+00001| #![cfg_attr(target_arch = "wasm32", no_main)]
+00002| 
+00003| mod state;
+00004| 
+00005| use async_graphql::{EmptySubscription, Object, Request, Response, Schema};
+00006| use linera_sdk::{
+00007|     abi::WithServiceAbi,
+00008|     views::View,
+00009|     Service, ServiceRuntime,
+00010| };
+00011| use std::sync::Arc;
+00012| 
+00013| use linera_name_system::Operation;
+00014| use self::state::LineraNameSystemState;
+00015| 
+00016| pub struct LineraNameSystemService {
+00017|     state: Arc<LineraNameSystemState>,
+00018|     runtime: Arc<ServiceRuntime<Self>>,
+00019| }
+00020| 
+00021| linera_sdk::service!(LineraNameSystemService);
+00022| 
+00023| impl WithServiceAbi for LineraNameSystemService {
+00024|     type Abi = linera_name_system::LineraNameSystemAbi;
+00025| }
+00026| 
+00027| impl Service for LineraNameSystemService {
+00028|     type Parameters = ();
+00029| 
+00030|     async fn new(runtime: ServiceRuntime<Self>) -> Self {
+00031|         let state = LineraNameSystemState::load(runtime.root_view_storage_context())
+00032|             .await
+00033|             .expect("Failed to load state");
+00034|         LineraNameSystemService { 
+00035|             state: Arc::new(state),
+00036|             runtime: Arc::new(runtime),
+00037|         }
+00038|     }
+00039| 
+00040|     async fn handle_query(&self, request: Request) -> Response {
+00041|         let schema = Schema::build(QueryRoot, MutationRoot, EmptySubscription)
+00042|             .data(self.state.clone())
+00043|             .data(self.runtime.clone())
+00044|             .finish();
+00045|         schema.execute(request).await
+00046|     }
+00047| }
+00048| 
+00049| struct QueryRoot;
+00050| 
+00051| #[Object]
+00052| impl QueryRoot {
+00053|     /// Look up the owner of a domain from local state.
+00054|     async fn owner(&self, ctx: &async_graphql::Context<'_>, name: String) -> Option<String> {
+00055|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00056|         state.domains.get(&name).await.ok().flatten().map(|r| r.owner)
+00057|     }
+00058| 
+00059|     /// Check if a domain is available (not registered or expired).
+00060|     async fn is_available(&self, ctx: &async_graphql::Context<'_>, name: String) -> bool {
+00061|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00062|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00063|         let current_time = runtime.system_time().micros();
+00064|         
+00065|         match state.domains.get(&name).await.ok().flatten() {
+00066|             None => true,
+00067|             Some(record) => current_time > record.expiration,
+00068|         }
+00069|     }
+00070| 
+00071|     /// Get full domain information
+00072|     async fn domain(&self, ctx: &async_graphql::Context<'_>, name: String) -> Option<DomainInfo> {
+00073|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00074|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00075|         let current_time = runtime.system_time().micros();
+00076|         
+00077|         state.domains.get(&name).await.ok().flatten().map(|r| DomainInfo {
+00078|             name,
+00079|             owner: r.owner,
+00080|             owner_chain_id: r.owner_chain_id.to_string(),
+00081|             expiration: r.expiration,
+00082|             is_expired: current_time > r.expiration,
+00083|             price: r.price.to_string(),
+00084|             is_for_sale: r.price > 0,
+00085|             value: r.value,
+00086|         })
+00087|     }
+00088| 
+00089|     /// Resolve a domain name to its value (DNS-like lookup)
+00090|     async fn resolve(&self, ctx: &async_graphql::Context<'_>, name: String) -> Option<String> {
+00091|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00092|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00093|         let current_time = runtime.system_time().micros();
+00094|         
+00095|         match state.domains.get(&name).await.ok().flatten() {
+00096|             Some(record) if current_time <= record.expiration => Some(record.value),
+00097|             _ => None,
+00098|         }
+00099|     }
+00100| 
+00101|     /// Get the registry chain ID (the source of truth for all domains)
+00102|     async fn registry_chain_id(&self, ctx: &async_graphql::Context<'_>) -> String {
+00103|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00104|         runtime.application_creator_chain_id().to_string()
+00105|     }
+00106| 
+00107|     /// Check if current chain is the registry chain
+00108|     async fn is_registry_chain(&self, ctx: &async_graphql::Context<'_>) -> bool {
+00109|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00110|         runtime.chain_id() == runtime.application_creator_chain_id()
+00111|     }
+00112| 
+00113|     /// Get the current chain ID
+00114|     async fn current_chain_id(&self, ctx: &async_graphql::Context<'_>) -> String {
+00115|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00116|         runtime.chain_id().to_string()
+00117|     }
+00118| 
+00119|     /// List all registered domains (including expired ones).
+00120|     async fn all_domains(&self, ctx: &async_graphql::Context<'_>) -> Vec<DomainInfo> {
+00121|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00122|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00123|         let current_time = runtime.system_time().micros();
+00124|         
+00125|         let mut domains = Vec::new();
+00126|         let _ = state.domains.for_each_index_value(|name, record| {
+00127|             domains.push(DomainInfo {
+00128|                 name: name.clone(),
+00129|                 owner: record.owner.clone(),
+00130|                 owner_chain_id: record.owner_chain_id.to_string(),
+00131|                 expiration: record.expiration,
+00132|                 is_expired: current_time > record.expiration,
+00133|                 price: record.price.to_string(),
+00134|                 is_for_sale: record.price > 0,
+00135|                 value: record.value.clone(),
+00136|             });
+00137|             Ok(())
+00138|         }).await;
+00139|         domains
+00140|     }
+00141| 
+00142|     /// List all domains that are for sale
+00143|     async fn domains_for_sale(&self, ctx: &async_graphql::Context<'_>) -> Vec<DomainInfo> {
+00144|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00145|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00146|         let current_time = runtime.system_time().micros();
+00147|         
+00148|         let mut domains = Vec::new();
+00149|         let _ = state.domains.for_each_index_value(|name, record| {
+00150|             if record.price > 0 && current_time <= record.expiration {
+00151|                 domains.push(DomainInfo {
+00152|                     name: name.clone(),
+00153|                     owner: record.owner.clone(),
+00154|                     owner_chain_id: record.owner_chain_id.to_string(),
+00155|                     expiration: record.expiration,
+00156|                     is_expired: false,
+00157|                     price: record.price.to_string(),
+00158|                     is_for_sale: true,
+00159|                     value: record.value.clone(),
+00160|                 });
+00161|             }
+00162|             Ok(())
+00163|         }).await;
+00164|         domains
+00165|     }
+00166| 
+00167|     /// List domains owned by a specific address
+00168|     async fn domains_by_owner(&self, ctx: &async_graphql::Context<'_>, owner: String) -> Vec<DomainInfo> {
+00169|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00170|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00171|         let current_time = runtime.system_time().micros();
+00172|         let owner_lower = owner.to_lowercase();
+00173|         
+00174|         let mut domains = Vec::new();
+00175|         let _ = state.domains.for_each_index_value(|name, record| {
+00176|             if record.owner == owner_lower {
+00177|                 domains.push(DomainInfo {
+00178|                     name: name.clone(),
+00179|                     owner: record.owner.clone(),
+00180|                     owner_chain_id: record.owner_chain_id.to_string(),
+00181|                     expiration: record.expiration,
+00182|                     is_expired: current_time > record.expiration,
+00183|                     price: record.price.to_string(),
+00184|                     is_for_sale: record.price > 0,
+00185|                     value: record.value.clone(),
+00186|                 });
+00187|             }
+00188|             Ok(())
+00189|         }).await;
+00190|         domains
+00191|     }
+00192| 
+00193|     /// Get the claimable balance for a specific owner (from domain sales)
+00194|     async fn claimable_balance(&self, ctx: &async_graphql::Context<'_>, owner: String) -> String {
+00195|         let state = ctx.data_unchecked::<Arc<LineraNameSystemState>>();
+00196|         let owner_lower = owner.to_lowercase();
+00197|         
+00198|         match state.balances.get(&owner_lower).await.ok().flatten() {
+00199|             Some(balance) => balance.to_string(),
+00200|             None => "0".to_string(),
+00201|         }
+00202|     }
+00203| }
+00204| 
+00205| #[derive(async_graphql::SimpleObject)]
+00206| struct DomainInfo {
+00207|     name: String,
+00208|     owner: String,
+00209|     owner_chain_id: String,
+00210|     expiration: u64,
+00211|     is_expired: bool,
+00212|     price: String,
+00213|     is_for_sale: bool,
+00214|     value: String,
+00215| }
+00216| 
+00217| struct MutationRoot;
+00218| 
+00219| #[Object]
+00220| impl MutationRoot {
+00221|     /// Register a new .linera domain (1 year expiration by default)
+00222|     async fn register(&self, ctx: &async_graphql::Context<'_>, name: String) -> bool {
+00223|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00224|         let operation = Operation::Register { name };
+00225|         runtime.schedule_operation(&operation);
+00226|         true
+00227|     }
+00228| 
+00229|     /// Transfer domain ownership
+00230|     async fn transfer(&self, ctx: &async_graphql::Context<'_>, name: String, new_owner: String) -> bool {
+00231|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00232|         let operation = Operation::Transfer { name, new_owner };
+00233|         runtime.schedule_operation(&operation);
+00234|         true
+00235|     }
+00236| 
+00237|     /// Extend domain registration by additional years (1-10)
+00238|     async fn extend(&self, ctx: &async_graphql::Context<'_>, name: String, years: i32) -> bool {
+00239|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00240|         let operation = Operation::Extend { name, years: years as u32 };
+00241|         runtime.schedule_operation(&operation);
+00242|         true
+00243|     }
+00244| 
+00245|     /// Set the price for selling the domain (use "0" to remove from sale)
+00246|     async fn set_price(&self, ctx: &async_graphql::Context<'_>, name: String, price: String) -> bool {
+00247|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00248|         let price_value: u128 = price.parse().unwrap_or(0);
+00249|         let operation = Operation::SetPrice { name, price: price_value };
+00250|         runtime.schedule_operation(&operation);
+00251|         true
+00252|     }
+00253| 
+00254|     /// Buy a domain that is for sale
+00255|     /// expected_price should match the current price from domain query
+00256|     async fn buy(&self, ctx: &async_graphql::Context<'_>, name: String, expected_price: String) -> bool {
+00257|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00258|         let price_value: u128 = expected_price.parse().expect("Invalid price format");
+00259|         let operation = Operation::Buy { name, expected_price: price_value };
+00260|         runtime.schedule_operation(&operation);
+00261|         true
+00262|     }
+00263| 
+00264|     /// Set the DNS-like value for a domain
+00265|     async fn set_value(&self, ctx: &async_graphql::Context<'_>, name: String, value: String) -> bool {
+00266|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00267|         let operation = Operation::SetValue { name, value };
+00268|         runtime.schedule_operation(&operation);
+00269|         true
+00270|     }
+00271| 
+00272|     /// Withdraw accumulated balance from domain sales
+00273|     async fn withdraw(&self, ctx: &async_graphql::Context<'_>) -> bool {
+00274|         let runtime = ctx.data_unchecked::<Arc<ServiceRuntime<LineraNameSystemService>>>();
+00275|         let operation = Operation::Withdraw;
+00276|         runtime.schedule_operation(&operation);
+00277|         true
+00278|     }
+00279| }
+00280| 
+
+(End of file - total 280 lines)
+</file>
+
+## Assistant
+
+<thinking>
+**Reviewing Application State**
+
+I've been analyzing the codebase and have a much clearer picture. The `LineraNameSystemState` in `state.rs` is the core, managing `domains` and `balances` within a `RootView`. Delving into `contract.rs`, I'm figuring out how calls modify this RootView. Further, I'm starting to understand how ownership and delegation are handled.
+
+
+**Unpacking Contract Logic**
+
+I'm now deeply immersed in the `LineraNameSystemContract`'s implementation. I see that it expertly manages operations across different chains, using the `registry_chain_id` as the central state hub. Operations are handled differently based on the chain they originate from – direct modifications on the registry, and cross-chain messaging for other chains. The state indeed seems to reside predominantly on the `registry_chain_id`.
+
+
+**Examining State Synchronization**
+
+I'm pondering the implications of state residing solely on `registry_chain_id`. It seems other chains won't have the updated `domains` information by default, as the `LineraNameSystemState` is a `RootView` sharded across chains. Given the cross-chain messaging to update `registry_chain_id`, I'm looking for how other chains synchronize their state. Without a mechanism to sync, local chain state would be empty or stale, which I'm trying to reconcile.
+
+
+**Clarifying State Access**
+
+I'm now formulating a question that encapsulates the user's need. I'm focusing on querying the registry chain's state from another chain. This involves understanding how to enable "temporary ownership" or "read-only access" to remote application state. I'm also asking if Linera offers mechanisms like GraphQL or cross-chain contract calls to access remote views without migrating the entire application state. I'm aiming to capture their core concern about state access across chains.
+
+
+
+</thinking>
+
+**Tool Call: **
+Status: Completed
+
+You're asking about how one chain can read the application state of an application located on another chain, specifically whether there's a mechanism for read-only access without transferring ownership of the application. This is relevant to implementing a naming system where a registry on one chain needs to be queried by other chains.
+
+In the Linera protocol, a chain can query the state of an application on another chain using the `query_application` mechanism. This allows for read-only access to an application's state without transferring ownership or moving the application itself .
+
+### Querying Application State Across Chains
+
+The process involves several layers:
+
+1.  **Client-side Query**: A client initiates a query to a specific chain for an application's state . The `ChainClient` provides methods like `query_user_application` for this purpose . This method constructs a `Query::User` object containing the `ApplicationId` and the query bytes .
+
+2.  **Local Node/Worker Handling**: The query is then handled by a `LocalNode` or `Worker` instance  . The `Worker` dispatches the `QueryApplication` request to the appropriate `ChainWorkerActor` .
+
+3.  **Chain Worker Processing**: The `ChainWorkerActor` receives the `QueryApplication` request  and forwards it to the `ChainWorkerState`'s `query_application` method . This method initializes the chain if needed and then calls the `ChainStateView`'s `query_application` .
+
+4.  **Execution State Query**: The `ChainStateView` then delegates the query to its `execution_state` . The `ExecutionStateView::query_application` method is responsible for executing the query against the specified user application .
+
+5.  **Application Execution**: Inside `ExecutionStateView::query_application`, if it's a user application query, it calls either `query_user_application_with_long_lived_service` or `query_user_application` . These methods handle the actual execution of the query against the WebAssembly service of the application  . The `ServiceSyncRuntime` is used to run the query in a read-only manner .
+
+This entire flow ensures that a chain can query the state of an application on another chain without needing to become a "temporary owner" or moving the application. The `query_service` function in the `linera-sdk` also provides a way for contracts to query other application services .
+
+## Notes
+
+The concept of a "temporary owner" or moving an application between chains is not directly supported in the provided codebase for read-only access. The existing `query_application` mechanism is designed for read-only inspection of state on remote chains.
+
+Wiki pages you might want to explore:
+- [Architecture Overview (linera-io/linera-protocol)](/wiki/linera-io/linera-protocol#1.1)
+- [Chain Workers (linera-io/linera-protocol)](/wiki/linera-io/linera-protocol#2.2)
+
+View this search on DeepWiki: https://deepwiki.com/search/how-can-one-chain-read-the-app_06410660-f090-4805-9f8d-50157bb9c0e1
+
+
+## Assistant
+
+<thinking>
+**Analyzing Contract Interactions**
+
+I've been examining the suggestions from deepwiki. While `query_application` seems relevant, the "client-side query" aspect raises concerns. My current focus is on bridging that gap. Specifically, I'm trying to figure out how to accurately check the state of another chain, especially given the emphasis on doing so *via smart contract* and avoiding potential limitations. I'm exploring all the ways this can be handled.
+
+
+**Investigating Cross-Chain Queries**
+
+I'm now investigating the `query_service` function in the Linera SDK to see if it allows for cross-chain querying. The user's concern about synchronous state checks across chains is valid, given Linera's asynchronous nature. My current direction is to clarify the scope of `query_service` - is it limited to local applications or does it offer functionality for checking state on *remote* chains? The Linera documentation or source code seems the best source of truth for this specific functionality. I am looking for the limitations on this specific point.
+
+
+**Examining Asynchronous Messaging**
+
+The inherent asynchronous nature of cross-chain interaction in Linera is becoming clearer. I've re-examined the DeepWiki responses and confirmed that direct state manipulation between chains isn't built-in. I'm focusing on the standard message-passing approach, which aligns with my understanding from `contract.rs` and the typical "request-response" flow. It seems synchronous read is not standard, and I need to figure out how to handle the user's synchronous read use case, or propose an alternative solution.
+
+
+**Deciphering Chain Ownership**
+
+I'm now clarifying the relationship between "ownership" of an application in Linera and state management. The user's question about temporary ownership has me considering how chains interact regarding shared application data. I've confirmed that the state of an application is local to each chain, even if its logically centralized. The `LineraNameSystem` reinforces this, with all data residing on the `registry_chain_id`. The challenge remains: how to allow a contract on Chain A to access and reliably check the state on another chain in an asynchronous environment? I'm now exploring potential design patterns.
+
+
+**Refining Ownership Assumptions**
+
+I'm now revisiting the "temporary ownership" concept, realizing a synchronous, cross-chain read might not be feasible. My thoughts are gravitating towards a "transfer-and-read-back" pattern or exploring the `request_application` function to achieve a similar effect. A crucial follow-up query to DeepWiki is necessary to clarify the intended meaning of "temporary ownership" and establish the feasibility of contract-to-contract synchronous reads across chains.
+
+
+
+</thinking>
+
+**Tool Call: **
+Status: Completed
+
+You're asking about cross-chain state access within the Linera protocol, specifically if a smart contract on one chain can synchronously query the state of the same application on a different chain, or if it's strictly asynchronous via messages. You also inquire about the possibility of temporarily moving an active application instance and its state to the current chain for reading.
+
+In Linera, cross-chain state access is primarily asynchronous, relying on messages. A smart contract on one chain cannot synchronously query the state of an application on another chain . Instead, applications communicate by sending messages to each other across chains .
+
+Here's how cross-chain communication and state access work:
+### Asynchronous Message Passing
+Applications on different chains communicate by sending `Message`s . When an application sends a message, it's placed in an "outbox" on the sender's chain . The recipient chain then processes this message from its "inbox" . This process is asynchronous, meaning the sender doesn't wait for an immediate response from the recipient .
+
+For example, in `linera-sdk/src/contract/test_runtime.rs`, the `send_message` function explicitly schedules a message to be sent to an application on another chain . The `linera_net_tests.rs` also demonstrates this asynchronous message processing where `node_service2.process_inbox(&chain2)` is called to process incoming messages .
+
+### Querying Application State
+While direct synchronous cross-chain state queries are not supported, an application can query its *own* state or the state of other applications on the *same* chain. This is done using the `query_application` function .
+
+The `ChainStateView` provides a `query_application` method  which is used by the `LocalNode`  and `Worker`  to execute queries. The `ChainClient` also offers `query_system_application` and `query_user_application` for querying applications on the current chain  .
+
+Within a contract, you can query a service on the *same* chain using `query_service` . This is intended for queries where all validators are likely to compute the same result .
+
+### Moving Application Instances
+It is not possible to "move an active application instance (and its state) to the current chain temporarily to read it." The Linera protocol is designed with per-chain processing units called `ChainWorker`s . Each `ChainWorker` manages the state of a single chain, and applications are deployed on specific chains . The state of an application is intrinsically tied to the `ChainStateView` of the chain it's deployed on .
+
+The concept of "making another chain a temporary owner" to check state is not directly supported in the provided codebase. Ownership of a chain is part of its configuration  and is not designed for temporary transfers to facilitate synchronous cross-chain state reads. Cross-chain interactions are handled through the explicit sending and receiving of messages .
+
+## Notes
+The `linera-execution/tests/test_execution.rs` file contains a test case `test_cross_application_call_from_finalize`  which explicitly checks that an application cannot perform cross-application calls during its `finalize` step, indicating a strict separation of execution contexts. This further supports the asynchronous, message-based approach to cross-chain interactions rather than synchronous calls or state transfers.
+
+Wiki pages you might want to explore:
+- [Architecture Overview (linera-io/linera-protocol)](/wiki/linera-io/linera-protocol#1.1)
+- [Chain Workers (linera-io/linera-protocol)](/wiki/linera-io/linera-protocol#2.2)
+
+View this search on DeepWiki: https://deepwiki.com/search/can-a-smart-contract-on-one-ch_87e1e55c-7fd6-4869-8364-fd2777905609
+
+
+## Assistant
+
+<thinking>
+**Analyzing Inter-Chain Data**
+
+I've finally reached a solid conclusion. Synchronous cross-chain reading is impossible. It requires asynchronous message passing. Shifting the entire application or state to another chain isn't feasible, it's just a mechanism.
+
+
+**Examining Chain-to-Chain Patterns**
+
+I'm now certain about the limitations. Synchronous reading is out. Moving application instances for reads is a dead end too. The standard method is definitively asynchronous messaging, which aligns with existing client-side GraphQL approaches. I'm exploring a local read-only cache with subscription-like behavior for efficiency, considering the `MapView` implementation and the need to efficiently check domain lists. I'm thinking about how `Register` operations can trigger updates across chains.
+
+
+**Synthesizing Cross-Chain Data**
+
+It seems asynchronous messaging is the only viable approach for contract-level checks.  I've distilled it down:  Chain A sends a request, Registry Chain confirms ownership, then Chain A proceeds.  This "Promised" pattern is the core.  I need to clarify that direct chain-to-chain "ownership transfer" is out.  Read-only access is still a viable discussion point for front-end access only.  I'm ready to answer the user's specific question.
+
+
+**Refining Access Limitations**
+
+I've confirmed that no direct synchronous state reads across chains are possible via smart contracts. Linera's asynchronous architecture enforces this. For contracts, the standard Request-Response messaging pattern is key. However, client-side access remains possible via GraphQL queries to specific chain nodes. This supports the initial suspicions about these inherent limitations.
+
+
+
+</thinking>
+
+Based on the analysis of the `linera-io/linera-protocol` repository via DeepWiki and your codebase, here is the answer to your question.
+
+### Short Answer
+**No, it is not possible** to make another chain a "temporary owner" of an application ID to synchronously check its state, nor is there a "direct read-only access" mechanism for smart contracts to read another chain's state instantly.
+
+### Detailed Findings
+
+1.  **State Isolation**: In Linera, application state is sharded per chain. A smart contract running on **Chain A** can only access the state of the application instance on **Chain A**. It cannot physically read the memory or storage of **Chain B**.
+2.  **Strict Asynchrony**: Cross-chain interactions are strictly **asynchronous**.
+    *   **Synchronous**: You *can* use `query_service` or `query_application` to query applications on the **same chain**.
+    *   **Asynchronous**: To get data from another chain, you **must** send a `Message` (Request) and wait for a `Message` (Response).
+3.  **No "Temporary Ownership"**: The concept of moving an active application instance (and its state) to another chain temporarily to read it does not exist. State is tied to the chain where it was created or modified.
+
+### Recommended Approaches
+
+Since you cannot synchronously "check list of domain" from another chain inside a contract:
+
+1.  **For UI (Frontend)**: Continue doing what you are likely doing—query the **Registry Chain's** GraphQL endpoint directly from the client. This is the correct pattern for "reading" data.
+2.  **For Smart Contract Logic**: If a contract on Chain A needs to verify domain ownership on Registry Chain:
+    *   **Pattern**: *Request-Response / Callback*
+    *   **Step 1**: Chain A sends a `CheckOwnership` message to Registry Chain.
+    *   **Step 2**: Registry Chain checks its local state and sends back an `OwnershipConfirmed` message.
+    *   **Step 3**: Chain A receives the message and executes the dependent logic.
+
+Your current implementation in `contract.rs` correctly follows this pattern by distinguishing between `current_chain == registry_chain_id` and sending messages for remote operations. You are already on the right track!
+
+## User
+
+can you make a simple contract to test whether we can query domain name inside smart contract:
+
+```
+For Smart Contract Logic**: If a contract on Chain A needs to verify domain ownership on Registry Chain:
+    *   **Pattern**: *Request-Response / Callback*
+    *   **Step 1**: Chain A sends a `CheckOwnership` message to Registry Chain.
+    *   **Step 2**: Registry Chain checks its local state and sends back an `OwnershipConfirmed` message.
+    *   **Step 3**: Chain A receives the message and executes the dependent logic.
+```
+
+using this logic please create new contract using the linera cli as documented in [@README.md](file:///home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/README.md) then just hardcode the application id in [@counter-app.tsx](file:///home/uratmangun/CascadeProjects/linera-name-system-worktree/src/components/counter-app.tsx) add a new component to query domain name via smart contract via application id
+
+## Assistant
+
+<thinking>
+The user wants me to create a new smart contract that tests the cross-chain query pattern for domain ownership verification. Let me break this down:
+
+1. Create a new contract using `linera project new` command
+2. The contract should:
+   - Send a `CheckOwnership` message to the LNS Registry Chain
+   - Receive an `OwnershipConfirmed` message back
+   - Store the result
+
+Let me first create the contract using the linera CLI, then modify the generated files to implement the cross-chain query logic.
+
+I'll need to:
+1. Run `linera project new domain_checker` in the contracts folder
+2. Modify the generated files to implement the cross-chain messaging pattern
+3. The contract will need to know the LNS application ID (hardcoded from the counter-app.tsx)
+
+Let me check the counter-app.tsx to get the application ID first.
+</thinking>
+
+I'll create a new contract to test the cross-chain domain query pattern. Let me first check the application ID from the counter-app component, then create the new contract.
+
+**Tool Call: src/components/counter-app.tsx**
+Status: Completed
+
+<file>
+00076|   const [claimableBalance, setClaimableBalance] = useState<string | null>(null);
+00077|   const [isLoadingClaimable, setIsLoadingClaimable] = useState(false);
+00078|   const [isWithdrawing, setIsWithdrawing] = useState(false);
+00079| 
+00080|   const applicationId = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
+00081| 
+00082|   // Registration/Extension fee in LINERA (0.1 per year)
+00083|   const REGISTRATION_FEE_LINERA = 0.1;
+00084| 
+00085|   useEffect(() => {
+00086|     setMounted(true);
+00087|     setChainConnected(lineraAdapter.isChainConnected());
+00088|     setAppConnected(lineraAdapter.isApplicationSet());
+00089|   }, []);
+00090| 
+00091|   // Auto-connect to Linera when wallet is connected
+00092|   const autoConnect = useCallback(async () => {
+00093|     if (!primaryWallet || !applicationId || isAutoConnecting) return;
+00094|     if (chainConnected && appConnected) return;
+00095| 
+
+(File has more lines. Use 'offset' parameter to read beyond line 95)
+</file>
+
+**Tool Call: read**
+Status: Failed
+
+Error: The user has blocked you from reading /home/uratmangun/CascadeProjects/linera-name-system-worktree/.env.local, DO NOT make further attempts to read it
+
+**Tool Call: .env.example**
+Status: Completed
+
+<file>
+00001| NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID=
+00002| NEXT_PUBLIC_LINERA_APPLICATION_ID=
+00003| NEXT_PUBLIC_LINERA_FAUCET_URL=
+00004| NEXT_PUBLIC_LINERA_NODE_SERVICE_URL=http://localhost:8080
+00005| 
+
+(End of file - total 5 lines)
+</file>
+
+**Tool Call: 7 todos**
+Status: Completed
+
+[
+  {
+    "id": "1",
+    "content": "Create new contract using linera project new domain_checker",
+    "status": "in_progress",
+    "priority": "high"
+  },
+  {
+    "id": "2",
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "id": "3",
+    "content": "Implement state.rs to store query results",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "status": "pending",
+    "priority": "high",
+    "id": "4"
+  },
+  {
+    "id": "5",
+    "content": "Implement service.rs with GraphQL queries",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "priority": "high",
+    "id": "6",
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "status": "pending"
+  },
+  {
+    "id": "7",
+    "content": "Create frontend component to test the cross-chain query",
+    "status": "pending",
+    "priority": "medium"
+  }
+]
+
+**Tool Call: Create new domain_checker contract using linera CLI**
+Status: Completed
+
+/usr/bin/bash: line 1: and: command not found
+
+
+## Assistant
+
+<thinking>
+The user wants me to create a new smart contract that tests the cross-chain query pattern for domain ownership verification. Let me break this down:
+
+1. Create a new contract using `linera project new` command
+2. The contract should:   - Send a `CheckOwnership` message to the LNS Registry Chain   - Receive an `OwnershipConfirmed` message back   - Store the resultLet me first create the contract using the linera CLI, then modify the generated files to implement the cross-chain query logic.
+
+I'll need to:1. Run `linera project new domain_checker` in the contracts folder2. Modify the generated files to implement the cross-chain messaging pattern
+3. The contract will need to know the LNS application ID (hardcoded from the counter-app.tsx)
+
+Let me check the counter-app.tsx to get the application ID first.
+</thinking>
+
+**Tool Call: Create new domain_checker contract using linera CLI**
+Status: Completed
+
+2026-01-04T13:00:06.117253Z  INFO linera: New project created in 12 ms
+
+
+## User
+
+please continue
+
+**Tool Call: List files in the new domain_checker contract**
+Status: Completed
+
+total 24
+drwxrwxr-x 2 uratmangun uratmangun 4096 Jan  4 20:00 .
+drwxrwxr-x 5 uratmangun uratmangun 4096 Jan  4 20:00 ..
+-rw-rw-r-- 1 uratmangun uratmangun 2996 Jan  4 20:00 contract.rs
+-rw-rw-r-- 1 uratmangun uratmangun  530 Jan  4 20:00 lib.rs
+-rw-rw-r-- 1 uratmangun uratmangun 2502 Jan  4 20:00 service.rs
+-rw-rw-r-- 1 uratmangun uratmangun  263 Jan  4 20:00 state.rs
+
+
+**Tool Call: contracts/domain_checker/Cargo.toml**
+Status: Completed
+
+<file>
+00001| [package]
+00002| name = "domain_checker"
+00003| version = "0.1.0"
+00004| edition = "2021"
+00005| 
+00006| [dependencies]
+00007| async-graphql = { version = "=7.0.17", default-features = false }
+00008| linera-sdk = "0.15.8"
+00009| futures = { version = "0.3 "}
+00010| serde = { version = "1.0", features = ["derive"] }
+00011| serde_json = { version = "1.0" }
+00012| 
+00013| [dev-dependencies]
+00014| linera-sdk = { version = "0.15.8", features = ["test", "wasmer"] }
+00015| tokio = { version = "1.40", features = ["rt", "sync"] }
+00016| 
+00017| [[bin]]
+00018| name = "domain_checker_contract"
+00019| path = "src/contract.rs"
+00020| 
+00021| [[bin]]
+00022| name = "domain_checker_service"
+00023| path = "src/service.rs"
+00024| 
+00025| [profile.release]
+00026| debug = true
+00027| lto = true
+00028| opt-level = 'z'
+00029| strip = 'debuginfo'
+00030| 
+
+(End of file - total 30 lines)
+</file>
+
+**Tool Call: contracts/domain_checker/src/lib.rs**
+Status: Completed
+
+<file>
+00001| use async_graphql::{Request, Response};
+00002| use linera_sdk::{
+00003|     graphql::GraphQLMutationRoot,
+00004|     linera_base_types::{ContractAbi, ServiceAbi},
+00005| };
+00006| use serde::{Deserialize, Serialize};
+00007| 
+00008| pub struct DomainCheckerAbi;
+00009| 
+00010| impl ContractAbi for DomainCheckerAbi {
+00011|     type Operation = Operation;
+00012|     type Response = ();
+00013| }
+00014| 
+00015| impl ServiceAbi for DomainCheckerAbi {
+00016|     type Query = Request;
+00017|     type QueryResponse = Response;
+00018| }
+00019| 
+00020| #[derive(Debug, Deserialize, Serialize, GraphQLMutationRoot)]
+00021| pub enum Operation {
+00022|     Increment { value: u64 },
+00023| }
+00024| 
+
+(End of file - total 24 lines)
+</file>
+
+**Tool Call: contracts/domain_checker/src/state.rs**
+Status: Completed
+
+<file>
+00001| use linera_sdk::views::{linera_views, RegisterView, RootView, ViewStorageContext};
+00002| 
+00003| #[derive(RootView, async_graphql::SimpleObject)]
+00004| #[view(context = ViewStorageContext)]
+00005| pub struct DomainCheckerState {
+00006|     pub value: RegisterView<u64>,
+00007|     // Add fields here.
+00008| }
+00009| 
+
+(End of file - total 9 lines)
+</file>
+
+**Tool Call: contracts/domain_checker/src/contract.rs**
+Status: Completed
+
+<file>
+00001| #![cfg_attr(target_arch = "wasm32", no_main)]
+00002| 
+00003| mod state;
+00004| 
+00005| use linera_sdk::{
+00006|     linera_base_types::WithContractAbi,
+00007|     views::{RootView, View},
+00008|     Contract, ContractRuntime,
+00009| };
+00010| 
+00011| use domain_checker::Operation;
+00012| 
+00013| use self::state::DomainCheckerState;
+00014| 
+00015| pub struct DomainCheckerContract {
+00016|     state: DomainCheckerState,
+00017|     runtime: ContractRuntime<Self>,
+00018| }
+00019| 
+00020| linera_sdk::contract!(DomainCheckerContract);
+00021| 
+00022| impl WithContractAbi for DomainCheckerContract {
+00023|     type Abi = domain_checker::DomainCheckerAbi;
+00024| }
+00025| 
+00026| impl Contract for DomainCheckerContract {
+00027|     type Message = ();
+00028|     type Parameters = ();
+00029|     type InstantiationArgument = u64;
+00030|     type EventValue = ();
+00031| 
+00032|     async fn load(runtime: ContractRuntime<Self>) -> Self {
+00033|         let state = DomainCheckerState::load(runtime.root_view_storage_context())
+00034|             .await
+00035|             .expect("Failed to load state");
+00036|         DomainCheckerContract { state, runtime }
+00037|     }
+00038| 
+00039|     async fn instantiate(&mut self, argument: Self::InstantiationArgument) {
+00040|         // validate that the application parameters were configured correctly.
+00041|         self.runtime.application_parameters();
+00042|         self.state.value.set(argument);
+00043|     }
+00044| 
+00045|     async fn execute_operation(&mut self, operation: Self::Operation) -> Self::Response {
+00046|         match operation {
+00047|             Operation::Increment { value } => {
+00048|                 self.state.value.set(self.state.value.get() + value);
+00049|             }
+00050|         }
+00051|     }
+00052| 
+00053|     async fn execute_message(&mut self, _message: Self::Message) {}
+00054| 
+00055|     async fn store(mut self) {
+00056|         self.state.save().await.expect("Failed to save state");
+00057|     }
+00058| }
+00059| 
+00060| #[cfg(test)]
+00061| mod tests {
+00062|     use futures::FutureExt as _;
+00063|     use linera_sdk::{util::BlockingWait, views::View, Contract, ContractRuntime};
+00064| 
+00065|     use domain_checker::Operation;
+00066| 
+00067|     use super::{DomainCheckerContract, DomainCheckerState};
+00068| 
+00069|     #[test]
+00070|     fn operation() {
+00071|         let initial_value = 10u64;
+00072|         let mut app = create_and_instantiate_app(initial_value);
+00073| 
+00074|         let increment = 10u64;
+00075| 
+00076|         let _response = app
+00077|             .execute_operation(Operation::Increment { value: increment })
+00078|             .now_or_never()
+00079|             .expect("Execution of application operation should not await anything");
+00080| 
+00081|         assert_eq!(*app.state.value.get(), initial_value + increment);
+00082|     }
+00083| 
+00084|     fn create_and_instantiate_app(initial_value: u64) -> DomainCheckerContract {
+00085|         let runtime = ContractRuntime::new().with_application_parameters(());
+00086|         let mut contract = DomainCheckerContract {
+00087|             state: DomainCheckerState::load(runtime.root_view_storage_context())
+00088|                 .blocking_wait()
+00089|                 .expect("Failed to read from mock key value store"),
+00090|             runtime,
+00091|         };
+00092| 
+00093|         contract
+00094|             .instantiate(initial_value)
+00095|             .now_or_never()
+00096|             .expect("Initialization of application state should not await anything");
+00097| 
+00098|         assert_eq!(*contract.state.value.get(), initial_value);
+00099| 
+00100|         contract
+00101|     }
+00102| }
+00103| 
+
+(End of file - total 103 lines)
+</file>
+
+**Tool Call: contracts/domain_checker/src/service.rs**
+Status: Completed
+
+<file>
+00001| #![cfg_attr(target_arch = "wasm32", no_main)]
+00002| 
+00003| mod state;
+00004| 
+00005| use std::sync::Arc;
+00006| 
+00007| use async_graphql::{EmptySubscription, Object, Schema};
+00008| use linera_sdk::{
+00009|     graphql::GraphQLMutationRoot, linera_base_types::WithServiceAbi, views::View, Service,
+00010|     ServiceRuntime,
+00011| };
+00012| 
+00013| use domain_checker::Operation;
+00014| 
+00015| use self::state::DomainCheckerState;
+00016| 
+00017| pub struct DomainCheckerService {
+00018|     state: DomainCheckerState,
+00019|     runtime: Arc<ServiceRuntime<Self>>,
+00020| }
+00021| 
+00022| linera_sdk::service!(DomainCheckerService);
+00023| 
+00024| impl WithServiceAbi for DomainCheckerService {
+00025|     type Abi = domain_checker::DomainCheckerAbi;
+00026| }
+00027| 
+00028| impl Service for DomainCheckerService {
+00029|     type Parameters = ();
+00030| 
+00031|     async fn new(runtime: ServiceRuntime<Self>) -> Self {
+00032|         let state = DomainCheckerState::load(runtime.root_view_storage_context())
+00033|             .await
+00034|             .expect("Failed to load state");
+00035|         DomainCheckerService {
+00036|             state,
+00037|             runtime: Arc::new(runtime),
+00038|         }
+00039|     }
+00040| 
+00041|     async fn handle_query(&self, query: Self::Query) -> Self::QueryResponse {
+00042|         Schema::build(
+00043|             QueryRoot {
+00044|                 value: *self.state.value.get(),
+00045|             },
+00046|             Operation::mutation_root(self.runtime.clone()),
+00047|             EmptySubscription,
+00048|         )
+00049|         .finish()
+00050|         .execute(query)
+00051|         .await
+00052|     }
+00053| }
+00054| 
+00055| struct QueryRoot {
+00056|     value: u64,
+00057| }
+00058| 
+00059| #[Object]
+00060| impl QueryRoot {
+00061|     async fn value(&self) -> &u64 {
+00062|         &self.value
+00063|     }
+00064| }
+00065| 
+00066| #[cfg(test)]
+00067| mod tests {
+00068|     use std::sync::Arc;
+00069| 
+00070|     use async_graphql::{Request, Response, Value};
+00071|     use futures::FutureExt as _;
+00072|     use linera_sdk::{util::BlockingWait, views::View, Service, ServiceRuntime};
+00073|     use serde_json::json;
+00074| 
+00075|     use super::{DomainCheckerService, DomainCheckerState};
+00076| 
+00077|     #[test]
+00078|     fn query() {
+00079|         let value = 60u64;
+00080|         let runtime = Arc::new(ServiceRuntime::<DomainCheckerService>::new());
+00081|         let mut state = DomainCheckerState::load(runtime.root_view_storage_context())
+00082|             .blocking_wait()
+00083|             .expect("Failed to read from mock key value store");
+00084|         state.value.set(value);
+00085| 
+00086|         let service = DomainCheckerService { state, runtime };
+00087|         let request = Request::new("{ value }");
+00088| 
+00089|         let response = service
+00090|             .handle_query(request)
+00091|             .now_or_never()
+00092|             .expect("Query should not await anything");
+00093| 
+00094|         let expected = Response::new(Value::from_json(json!({"value": 60})).unwrap());
+00095| 
+00096|         assert_eq!(response, expected)
+00097|     }
+00098| }
+00099| 
+
+(End of file - total 99 lines)
+</file>
+
+**Tool Call: contracts/linera_name_system/src/lib.rs**
+Status: Completed
+
+<file>
+00001| use async_graphql::{Request, Response};
+00002| use linera_sdk::abi::{ContractAbi, ServiceAbi};
+00003| use linera_sdk::linera_base_types::ChainId;
+00004| use serde::{Deserialize, Serialize};
+00005| 
+00006| pub struct LineraNameSystemAbi;
+00007| 
+00008| impl ContractAbi for LineraNameSystemAbi {
+00009|     type Operation = Operation;
+00010|     type Response = ();
+00011| }
+00012| 
+00013| impl ServiceAbi for LineraNameSystemAbi {
+00014|     type Query = Request;
+00015|     type QueryResponse = Response;
+00016| }
+00017| 
+00018| /// Operations that can be executed by the contract.
+00019| #[derive(Debug, Deserialize, Serialize)]
+00020| pub enum Operation {
+00021|     /// Register a new .linera domain (sends message to registry chain)
+00022|     Register { name: String },
+00023|     /// Transfer domain ownership (sends message to registry chain)
+00024|     Transfer { name: String, new_owner: String },
+00025|     /// Extend domain registration by additional years
+00026|     Extend { name: String, years: u32 },
+00027|     /// Set the price for selling the domain (0 = not for sale)
+00028|     SetPrice { name: String, price: u128 },
+00029|     /// Buy a domain that is for sale (requires sending payment)
+00030|     /// expected_price: The price the buyer expects to pay (from querying the registry)
+00031|     /// This prevents front-running attacks where the price changes between query and buy
+00032|     Buy { name: String, expected_price: u128 },
+00033|     /// Set the DNS-like value for a domain
+00034|     SetValue { name: String, value: String },
+00035|     /// Withdraw accumulated balance from domain sales
+00036|     Withdraw,
+00037| }
+00038| 
+00039| /// Cross-chain messages for the name system.
+00040| #[derive(Debug, Deserialize, Serialize)]
+00041| pub enum Message {
+00042|     /// Request to register a domain on the registry chain
+00043|     RequestRegister {
+00044|         name: String,
+00045|         owner: String,
+00046|         requester_chain: ChainId,
+00047|         /// The registration fee sent with this request (in attos)
+00048|         payment: u128,
+00049|     },
+00050|     /// Request to transfer a domain on the registry chain
+00051|     RequestTransfer {
+00052|         name: String,
+00053|         new_owner: String,
+00054|         current_owner: String,
+00055|         requester_chain: ChainId,
+00056|     },
+00057|     /// Request to extend domain registration
+00058|     RequestExtend {
+00059|         name: String,
+00060|         owner: String,
+00061|         years: u32,
+00062|         requester_chain: ChainId,
+00063|         /// The extension fee sent with this request (in attos)
+00064|         payment: u128,
+00065|     },
+00066|     /// Request to set domain price
+00067|     RequestSetPrice {
+00068|         name: String,
+00069|         owner: String,
+00070|         price: u128,
+00071|         requester_chain: ChainId,
+00072|     },
+00073|     /// Request to buy a domain (includes payment amount for verification)
+00074|     RequestBuy {
+00075|         name: String,
+00076|         buyer: String,
+00077|         buyer_chain: ChainId,
+00078|         /// The payment amount sent with this request (in attos)
+00079|         payment: u128,
+00080|     },
+00081|     /// Request to set domain value
+00082|     RequestSetValue {
+00083|         name: String,
+00084|         owner: String,
+00085|         value: String,
+00086|         requester_chain: ChainId,
+00087|     },
+00088|     /// Request to withdraw accumulated balance
+00089|     RequestWithdraw {
+00090|         owner: String,
+00091|         requester_chain: ChainId,
+00092|     },
+00093|     /// Response: Registration successful
+00094|     RegistrationSuccess { name: String },
+00095|     /// Response: Registration failed (domain taken, includes refund info)
+00096|     RegistrationFailed {
+00097|         name: String,
+00098|         reason: String,
+00099|         refund_amount: u128,
+00100|     },
+00101|     /// Response: Transfer successful
+00102|     TransferSuccess { name: String, new_owner: String },
+00103|     /// Response: Transfer failed
+00104|     TransferFailed { name: String, reason: String },
+00105|     /// Response: Extension successful
+00106|     ExtendSuccess { name: String, new_expiration: u64 },
+00107|     /// Response: Extension failed (includes refund info)
+00108|     ExtendFailed {
+00109|         name: String,
+00110|         reason: String,
+00111|         refund_amount: u128,
+00112|     },
+00113|     /// Response: Set price successful
+00114|     SetPriceSuccess { name: String, price: u128 },
+00115|     /// Response: Set price failed
+00116|     SetPriceFailed { name: String, reason: String },
+00117|     /// Response: Buy successful
+00118|     BuySuccess { name: String, new_owner: String },
+00119|     /// Response: Buy failed (includes refund info)
+00120|     BuyFailed {
+00121|         name: String,
+00122|         reason: String,
+00123|         refund_amount: u128,
+00124|     },
+00125|     /// Response: Set value successful
+00126|     SetValueSuccess { name: String },
+00127|     /// Response: Set value failed
+00128|     SetValueFailed { name: String, reason: String },
+00129|     /// Response: Withdraw successful
+00130|     WithdrawSuccess { amount: u128 },
+00131|     /// Response: Withdraw failed
+00132|     WithdrawFailed { reason: String },
+00133| }
+00134| 
+
+(End of file - total 134 lines)
+</file>
+
+**Tool Call: 6 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "in_progress"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "7",
+    "priority": "medium",
+    "status": "pending"
+  }
+]
+
+**Tool Call: contracts/domain_checker/src/lib.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/lib.rs
+```
+use async_graphql::{Request, Response};
+use linera_sdk::{
+    graphql::GraphQLMutationRoot,
+    linera_base_types::{ContractAbi, ServiceAbi, ChainId},
+};
+use serde::{Deserialize, Serialize};
+
+pub struct DomainCheckerAbi;
+
+impl ContractAbi for DomainCheckerAbi {
+    type Operation = Operation;
+    type Response = ();
+}
+
+impl ServiceAbi for DomainCheckerAbi {
+    type Query = Request;
+    type QueryResponse = Response;
+}
+
+/// Operations that can be executed by the domain checker contract
+#[derive(Debug, Deserialize, Serialize, GraphQLMutationRoot)]
+pub enum Operation {
+    /// Check ownership of a domain by querying the LNS registry
+    /// This sends a message to the registry chain and waits for a response
+    CheckOwnership { 
+        name: String,
+        /// The chain ID where the LNS registry is deployed
+        registry_chain_id: ChainId,
+    },
+}
+
+/// Messages for cross-chain communication
+#[derive(Debug, Deserialize, Serialize)]
+pub enum Message {
+    /// Request sent to LNS registry to check domain ownership
+    RequestCheckOwnership {
+        name: String,
+        requester_chain: ChainId,
+    },
+    /// Response from LNS registry with ownership info
+    OwnershipResponse {
+        name: String,
+        owner: Option<String>,
+        is_available: bool,
+        expiration: Option<u64>,
+    },
+}
+
+/// Domain query result stored in state
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct DomainQueryResult {
+    pub name: String,
+    pub owner: Option<String>,
+    pub is_available: bool,
+    pub expiration: Option<u64>,
+    pub query_timestamp: u64,
+}
+
+```
+
+
+**Tool Call: 5 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "in_progress"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "7",
+    "priority": "medium",
+    "status": "pending"
+  }
+]
+
+**Tool Call: contracts/domain_checker/src/state.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/state.rs
+```
+use linera_sdk::views::{linera_views, MapView, RootView, ViewStorageContext};
+use domain_checker::DomainQueryResult;
+
+/// State for the domain checker contract
+#[derive(RootView, async_graphql::SimpleObject)]
+#[view(context = ViewStorageContext)]
+pub struct DomainCheckerState {
+    /// Map of domain names to their query results
+    /// Key: domain name, Value: query result from LNS registry
+    pub domain_queries: MapView<String, DomainQueryResult>,
+    /// Pending queries that are waiting for responses
+    pub pending_queries: MapView<String, u64>, // domain name -> request timestamp
+}
+
+```
+
+
+**Tool Call: 4 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "in_progress"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "7",
+    "priority": "medium",
+    "status": "pending"
+  }
+]
+
+**Tool Call: contracts/domain_checker/src/contract.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/contract.rs
+```
+#![cfg_attr(target_arch = "wasm32", no_main)]
+
+mod state;
+
+use linera_sdk::{
+    linera_base_types::WithContractAbi,
+    views::{RootView, View},
+    Contract, ContractRuntime,
+};
+
+use domain_checker::{DomainQueryResult, Message, Operation};
+
+use self::state::DomainCheckerState;
+
+pub struct DomainCheckerContract {
+    state: DomainCheckerState,
+    runtime: ContractRuntime<Self>,
+}
+
+linera_sdk::contract!(DomainCheckerContract);
+
+impl WithContractAbi for DomainCheckerContract {
+    type Abi = domain_checker::DomainCheckerAbi;
+}
+
+impl Contract for DomainCheckerContract {
+    type Message = Message;
+    type Parameters = ();
+    type InstantiationArgument = ();
+    type EventValue = ();
+
+    async fn load(runtime: ContractRuntime<Self>) -> Self {
+        let state = DomainCheckerState::load(runtime.root_view_storage_context())
+            .await
+            .expect("Failed to load state");
+        DomainCheckerContract { state, runtime }
+    }
+
+    async fn instantiate(&mut self, _argument: Self::InstantiationArgument) {
+        // Nothing to initialize
+    }
+
+    async fn execute_operation(&mut self, operation: Self::Operation) -> Self::Response {
+        let current_chain = self.runtime.chain_id();
+        let current_time = self.runtime.system_time().micros();
+
+        match operation {
+            Operation::CheckOwnership { name, registry_chain_id } => {
+                // Step 1: Send a CheckOwnership request to the LNS registry chain
+                // Mark this query as pending
+                self.state.pending_queries.insert(&name, current_time)
+                    .expect("Failed to mark query as pending");
+
+                // Send the request message to the registry chain
+                let message = Message::RequestCheckOwnership {
+                    name,
+                    requester_chain: current_chain,
+                };
+                self.runtime.send_message(registry_chain_id, message);
+            }
+        }
+    }
+
+    async fn execute_message(&mut self, message: Self::Message) {
+        let current_time = self.runtime.system_time().micros();
+
+        match message {
+            Message::RequestCheckOwnership { name, requester_chain } => {
+                // This message should be handled by the LNS registry, not this contract
+                // But we include it here for completeness - in practice, this contract
+                // only sends RequestCheckOwnership, it doesn't receive it
+                panic!("DomainChecker should not receive RequestCheckOwnership messages");
+            }
+            Message::OwnershipResponse { name, owner, is_available, expiration } => {
+                // Step 3: Receive the response from the LNS registry
+                // Store the result in our state
+                let result = DomainQueryResult {
+                    name: name.clone(),
+                    owner,
+                    is_available,
+                    expiration,
+                    query_timestamp: current_time,
+                };
+
+                // Remove from pending and store the result
+                self.state.pending_queries.remove(&name)
+                    .expect("Failed to remove pending query");
+                self.state.domain_queries.insert(&name, result)
+                    .expect("Failed to store query result");
+            }
+        }
+    }
+
+    async fn store(mut self) {
+        self.state.save().await.expect("Failed to save state");
+    }
+}
+
+```
+
+
+**Tool Call: 3 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "in_progress"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "7",
+    "priority": "medium",
+    "status": "pending"
+  }
+]
+
+**Tool Call: contracts/domain_checker/src/service.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/service.rs
+```
+#![cfg_attr(target_arch = "wasm32", no_main)]
+
+mod state;
+
+use std::sync::Arc;
+
+use async_graphql::{EmptySubscription, Object, Schema};
+use linera_sdk::{
+    graphql::GraphQLMutationRoot,
+    linera_base_types::WithServiceAbi,
+    views::View,
+    Service, ServiceRuntime,
+};
+
+use domain_checker::{DomainQueryResult, Operation};
+
+use self::state::DomainCheckerState;
+
+pub struct DomainCheckerService {
+    state: Arc<DomainCheckerState>,
+    runtime: Arc<ServiceRuntime<Self>>,
+}
+
+linera_sdk::service!(DomainCheckerService);
+
+impl WithServiceAbi for DomainCheckerService {
+    type Abi = domain_checker::DomainCheckerAbi;
+}
+
+impl Service for DomainCheckerService {
+    type Parameters = ();
+
+    async fn new(runtime: ServiceRuntime<Self>) -> Self {
+        let state = DomainCheckerState::load(runtime.root_view_storage_context())
+            .await
+            .expect("Failed to load state");
+        DomainCheckerService {
+            state: Arc::new(state),
+            runtime: Arc::new(runtime),
+        }
+    }
+
+    async fn handle_query(&self, query: Self::Query) -> Self::QueryResponse {
+        Schema::build(
+            QueryRoot {
+                state: self.state.clone(),
+                runtime: self.runtime.clone(),
+            },
+            Operation::mutation_root(self.runtime.clone()),
+            EmptySubscription,
+        )
+        .finish()
+        .execute(query)
+        .await
+    }
+}
+
+struct QueryRoot {
+    state: Arc<DomainCheckerState>,
+    runtime: Arc<ServiceRuntime<DomainCheckerService>>,
+}
+
+#[Object]
+impl QueryRoot {
+    /// Get the cached query result for a domain
+    async fn domain_query(&self, name: String) -> Option<DomainQueryResultGql> {
+        self.state.domain_queries.get(&name).await.ok().flatten().map(|r| DomainQueryResultGql {
+            name: r.name,
+            owner: r.owner,
+            is_available: r.is_available,
+            expiration: r.expiration,
+            query_timestamp: r.query_timestamp,
+        })
+    }
+
+    /// Check if a query is pending for a domain
+    async fn is_query_pending(&self, name: String) -> bool {
+        self.state.pending_queries.get(&name).await.ok().flatten().is_some()
+    }
+
+    /// Get the timestamp when a query was initiated (if pending)
+    async fn pending_query_timestamp(&self, name: String) -> Option<u64> {
+        self.state.pending_queries.get(&name).await.ok().flatten()
+    }
+
+    /// List all cached domain query results
+    async fn all_cached_queries(&self) -> Vec<DomainQueryResultGql> {
+        let mut results = Vec::new();
+        let _ = self.state.domain_queries.for_each_index_value(|_name, record| {
+            results.push(DomainQueryResultGql {
+                name: record.name.clone(),
+                owner: record.owner.clone(),
+                is_available: record.is_available,
+                expiration: record.expiration,
+                query_timestamp: record.query_timestamp,
+            });
+            Ok(())
+        }).await;
+        results
+    }
+
+    /// Get the current chain ID
+    async fn current_chain_id(&self) -> String {
+        self.runtime.chain_id().to_string()
+    }
+}
+
+/// GraphQL representation of domain query result
+#[derive(async_graphql::SimpleObject)]
+struct DomainQueryResultGql {
+    name: String,
+    owner: Option<String>,
+    is_available: bool,
+    expiration: Option<u64>,
+    query_timestamp: u64,
+}
+
+```
+
+
+**Tool Call: 2 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "in_progress"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "7",
+    "priority": "medium",
+    "status": "pending"
+  }
+]
+
+## Assistant
+
+Now I need to update the `linera_name_system` contract to handle the `RequestCheckOwnership` message from the `domain_checker` contract.
+
+**Tool Call: contracts/linera_name_system/src/lib.rs**
+Status: Completed
+
+<file>
+00001| use async_graphql::{Request, Response};
+00002| use linera_sdk::abi::{ContractAbi, ServiceAbi};
+00003| use linera_sdk::linera_base_types::ChainId;
+00004| use serde::{Deserialize, Serialize};
+00005| 
+00006| pub struct LineraNameSystemAbi;
+00007| 
+00008| impl ContractAbi for LineraNameSystemAbi {
+00009|     type Operation = Operation;
+00010|     type Response = ();
+00011| }
+00012| 
+00013| impl ServiceAbi for LineraNameSystemAbi {
+00014|     type Query = Request;
+00015|     type QueryResponse = Response;
+00016| }
+00017| 
+00018| /// Operations that can be executed by the contract.
+00019| #[derive(Debug, Deserialize, Serialize)]
+00020| pub enum Operation {
+00021|     /// Register a new .linera domain (sends message to registry chain)
+00022|     Register { name: String },
+00023|     /// Transfer domain ownership (sends message to registry chain)
+00024|     Transfer { name: String, new_owner: String },
+00025|     /// Extend domain registration by additional years
+00026|     Extend { name: String, years: u32 },
+00027|     /// Set the price for selling the domain (0 = not for sale)
+00028|     SetPrice { name: String, price: u128 },
+00029|     /// Buy a domain that is for sale (requires sending payment)
+00030|     /// expected_price: The price the buyer expects to pay (from querying the registry)
+00031|     /// This prevents front-running attacks where the price changes between query and buy
+00032|     Buy { name: String, expected_price: u128 },
+00033|     /// Set the DNS-like value for a domain
+00034|     SetValue { name: String, value: String },
+00035|     /// Withdraw accumulated balance from domain sales
+00036|     Withdraw,
+00037| }
+00038| 
+00039| /// Cross-chain messages for the name system.
+00040| #[derive(Debug, Deserialize, Serialize)]
+00041| pub enum Message {
+00042|     /// Request to register a domain on the registry chain
+00043|     RequestRegister {
+00044|         name: String,
+00045|         owner: String,
+00046|         requester_chain: ChainId,
+00047|         /// The registration fee sent with this request (in attos)
+00048|         payment: u128,
+00049|     },
+00050|     /// Request to transfer a domain on the registry chain
+00051|     RequestTransfer {
+00052|         name: String,
+00053|         new_owner: String,
+00054|         current_owner: String,
+00055|         requester_chain: ChainId,
+00056|     },
+00057|     /// Request to extend domain registration
+00058|     RequestExtend {
+00059|         name: String,
+00060|         owner: String,
+00061|         years: u32,
+00062|         requester_chain: ChainId,
+00063|         /// The extension fee sent with this request (in attos)
+00064|         payment: u128,
+00065|     },
+00066|     /// Request to set domain price
+00067|     RequestSetPrice {
+00068|         name: String,
+00069|         owner: String,
+00070|         price: u128,
+00071|         requester_chain: ChainId,
+00072|     },
+00073|     /// Request to buy a domain (includes payment amount for verification)
+00074|     RequestBuy {
+00075|         name: String,
+00076|         buyer: String,
+00077|         buyer_chain: ChainId,
+00078|         /// The payment amount sent with this request (in attos)
+00079|         payment: u128,
+00080|     },
+00081|     /// Request to set domain value
+00082|     RequestSetValue {
+00083|         name: String,
+00084|         owner: String,
+00085|         value: String,
+00086|         requester_chain: ChainId,
+00087|     },
+00088|     /// Request to withdraw accumulated balance
+00089|     RequestWithdraw {
+00090|         owner: String,
+00091|         requester_chain: ChainId,
+00092|     },
+00093|     /// Response: Registration successful
+00094|     RegistrationSuccess { name: String },
+00095|     /// Response: Registration failed (domain taken, includes refund info)
+00096|     RegistrationFailed {
+00097|         name: String,
+00098|         reason: String,
+00099|         refund_amount: u128,
+00100|     },
+00101|     /// Response: Transfer successful
+00102|     TransferSuccess { name: String, new_owner: String },
+00103|     /// Response: Transfer failed
+00104|     TransferFailed { name: String, reason: String },
+00105|     /// Response: Extension successful
+00106|     ExtendSuccess { name: String, new_expiration: u64 },
+00107|     /// Response: Extension failed (includes refund info)
+00108|     ExtendFailed {
+00109|         name: String,
+00110|         reason: String,
+00111|         refund_amount: u128,
+00112|     },
+00113|     /// Response: Set price successful
+00114|     SetPriceSuccess { name: String, price: u128 },
+00115|     /// Response: Set price failed
+00116|     SetPriceFailed { name: String, reason: String },
+00117|     /// Response: Buy successful
+00118|     BuySuccess { name: String, new_owner: String },
+00119|     /// Response: Buy failed (includes refund info)
+00120|     BuyFailed {
+00121|         name: String,
+00122|         reason: String,
+00123|         refund_amount: u128,
+00124|     },
+00125|     /// Response: Set value successful
+00126|     SetValueSuccess { name: String },
+00127|     /// Response: Set value failed
+00128|     SetValueFailed { name: String, reason: String },
+00129|     /// Response: Withdraw successful
+00130|     WithdrawSuccess { amount: u128 },
+00131|     /// Response: Withdraw failed
+00132|     WithdrawFailed { reason: String },
+00133| }
+00134| 
+
+(End of file - total 134 lines)
+</file>
+
+**Tool Call: contracts/linera_name_system/src/lib.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/linera_name_system/src/lib.rs
+```
+    /// Request to withdraw accumulated balance
+    RequestWithdraw {
+        owner: String,
+        requester_chain: ChainId,
+    },
+    /// Request to check domain ownership (from domain_checker contract)
+    RequestCheckOwnership {
+        name: String,
+        requester_chain: ChainId,
+    },
+    /// Response: Domain ownership info
+    OwnershipResponse {
+        name: String,
+        owner: Option<String>,
+        is_available: bool,
+        expiration: Option<u64>,
+    },
+    /// Response: Registration successful
+```
+
+
+**Tool Call: contracts/linera_name_system/src/contract.rs**
+Status: Completed
+
+<file>
+00696|                         self.state.domains.insert(&name, record).expect("Failed to set value");
+00697|                         let response = Message::SetValueSuccess { name };
+00698|                         self.runtime.send_message(requester_chain, response);
+00699|                     }
+00700|                 }
+00701|             }
+00702|             Message::RequestWithdraw { owner, requester_chain } => {
+00703|                 assert_eq!(current_chain, registry_chain_id, "Only registry chain can process withdrawals");
+00704|                 
+00705|                 let balance = self.state.balances.get(&owner).await
+00706|                     .expect("Failed to read balance")
+00707|                     .unwrap_or(0);
+00708|                 
+00709|                 if balance == 0 {
+00710|                     let response = Message::WithdrawFailed {
+00711|                         reason: "No balance to withdraw".to_string(),
+00712|                     };
+00713|                     self.runtime.send_message(requester_chain, response);
+00714|                     return;
+00715|                 }
+00716|                 
+00717|                 // Transfer from application to the requester chain
+00718|                 let app_id = self.runtime.application_id();
+00719|                 let app_owner: AccountOwner = app_id.forget_abi().into();
+00720|                 
+00721|                 // For cross-chain transfer, we send to the chain's account
+00722|                 let destination = Account {
+00723|                     chain_id: requester_chain,
+00724|                     owner: AccountOwner::CHAIN,  // Chain account
+00725|                 };
+00726|                 
+00727|                 self.runtime.transfer(
+00728|                     app_owner,  // source: the application
+00729|                     destination,
+00730|                     Self::amount_from_u128(balance),
+00731|                 );
+00732|                 
+00733|                 // Clear the balance
+00734|                 self.state.balances.remove(&owner).expect("Failed to clear balance");
+00735|                 
+00736|                 let response = Message::WithdrawSuccess { amount: balance };
+00737|                 self.runtime.send_message(requester_chain, response);
+00738|             }
+00739|             // Response messages - just log them
+00740|             Message::RegistrationSuccess { name } => { let _ = name; }
+00741|             Message::RegistrationFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
+00742|             Message::TransferSuccess { name, new_owner } => { let _ = (name, new_owner); }
+00743|             Message::TransferFailed { name, reason } => { let _ = (name, reason); }
+00744|             Message::ExtendSuccess { name, new_expiration } => { let _ = (name, new_expiration); }
+00745|             Message::ExtendFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
+00746|             Message::SetPriceSuccess { name, price } => { let _ = (name, price); }
+00747|             Message::SetPriceFailed { name, reason } => { let _ = (name, reason); }
+00748|             Message::BuySuccess { name, new_owner } => { let _ = (name, new_owner); }
+00749|             Message::BuyFailed { name, reason, refund_amount } => { let _ = (name, reason, refund_amount); }
+00750|             Message::SetValueSuccess { name } => { let _ = name; }
+00751|             Message::SetValueFailed { name, reason } => { let _ = (name, reason); }
+00752|             Message::WithdrawSuccess { amount } => { let _ = amount; }
+00753|             Message::WithdrawFailed { reason } => { let _ = reason; }
+00754|         }
+00755|     }
+00756| 
+00757|     async fn store(mut self) {
+00758|         self.state.save().await.expect("Failed to save state");
+00759|     }
+00760| }
+00761| 
+
+(End of file - total 761 lines)
+</file>
+
+**Tool Call: contracts/linera_name_system/src/contract.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/linera_name_system/src/contract.rs
+```
+            Message::RequestWithdraw { owner, requester_chain } => {
+                assert_eq!(current_chain, registry_chain_id, "Only registry chain can process withdrawals");
+                
+                let balance = self.state.balances.get(&owner).await
+                    .expect("Failed to read balance")
+                    .unwrap_or(0);
+                
+                if balance == 0 {
+                    let response = Message::WithdrawFailed {
+                        reason: "No balance to withdraw".to_string(),
+                    };
+                    self.runtime.send_message(requester_chain, response);
+                    return;
+                }
+                
+                // Transfer from application to the requester chain
+                let app_id = self.runtime.application_id();
+                let app_owner: AccountOwner = app_id.forget_abi().into();
+                
+                // For cross-chain transfer, we send to the chain's account
+                let destination = Account {
+                    chain_id: requester_chain,
+                    owner: AccountOwner::CHAIN,  // Chain account
+                };
+                
+                self.runtime.transfer(
+                    app_owner,  // source: the application
+                    destination,
+                    Self::amount_from_u128(balance),
+                );
+                
+                // Clear the balance
+                self.state.balances.remove(&owner).expect("Failed to clear balance");
+                
+                let response = Message::WithdrawSuccess { amount: balance };
+                self.runtime.send_message(requester_chain, response);
+            }
+            Message::RequestCheckOwnership { name, requester_chain } => {
+                // Handle cross-chain domain ownership check from domain_checker contract
+                // This can be processed on any chain, but only the registry chain has the data
+                assert_eq!(current_chain, registry_chain_id, "Only registry chain can check ownership");
+                
+                let stored = self.state.domains.get(&name).await.expect("Failed to read state");
+                
+                let response = match stored {
+                    None => {
+                        // Domain not registered
+                        Message::OwnershipResponse {
+                            name,
+                            owner: None,
+                            is_available: true,
+                            expiration: None,
+                        }
+                    }
+                    Some(record) => {
+                        let is_expired = current_time > record.expiration;
+                        Message::OwnershipResponse {
+                            name,
+                            owner: Some(record.owner),
+                            is_available: is_expired,
+                            expiration: Some(record.expiration),
+                        }
+                    }
+                };
+                
+                self.runtime.send_message(requester_chain, response);
+            }
+            // Response messages - just log them
+            Message::OwnershipResponse { name, owner, is_available, expiration } => {
+                // This is a response message, just log it
+                let _ = (name, owner, is_available, expiration);
+            }
+```
+
+
+**Tool Call: 2 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Build contracts to verify compilation",
+    "id": "7",
+    "priority": "high",
+    "status": "in_progress"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "8",
+    "priority": "medium",
+    "status": "pending"
+  }
+]
+
+**Tool Call: Build domain_checker contract**
+Status: Completed
+
+    Updating crates.io index
+     Locking 549 packages to latest compatible versions
+      Adding async-graphql v7.0.17 (available: v7.1.0, requires Rust 1.89.0)
+      Adding async-graphql-derive v7.0.17 (available: v7.1.0)
+      Adding base64ct v1.6.0 (available: v1.8.2)
+      Adding crypto-common v0.1.6 (available: v0.1.7)
+      Adding matchit v0.8.4 (available: v0.8.6)
+      Adding ruzstd v0.8.1 (available: v0.8.2)
+ Downloading crates ...
+  Downloaded async-graphql-parser v7.1.0
+  Downloaded pest_generator v2.8.5
+  Downloaded zmij v1.0.10
+  Downloaded async-graphql-value v7.1.0
+  Downloaded tokio-stream v0.1.18
+  Downloaded pest_meta v2.8.5
+  Downloaded pest_derive v2.8.5
+  Downloaded tokio-util v0.7.18
+  Downloaded pest v2.8.5
+  Downloaded syn v2.0.113
+  Downloaded libc v0.2.179
+  Downloaded tokio v1.49.0
+   Compiling proc-macro2 v1.0.104
+   Compiling unicode-ident v1.0.22
+   Compiling quote v1.0.42
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling version_check v0.9.5
+   Compiling memchr v2.7.6
+   Compiling zmij v1.0.10
+   Compiling hashbrown v0.16.1
+   Compiling typenum v1.19.0
+   Compiling equivalent v1.0.2
+   Compiling cfg-if v1.0.4
+   Compiling serde_json v1.0.148
+   Compiling subtle v2.6.1
+   Compiling const-oid v0.9.6
+   Compiling unicode-segmentation v1.12.0
+   Compiling rustversion v1.0.22
+   Compiling generic-array v0.14.9
+   Compiling rand_core v0.6.4
+   Compiling semver v1.0.27
+   Compiling anyhow v1.0.100
+   Compiling cfg_aliases v0.2.1
+   Compiling pin-project-lite v0.2.16
+   Compiling wasm-bindgen-shared v0.2.106
+   Compiling itoa v1.0.17
+   Compiling once_cell v1.21.3
+   Compiling ident_case v1.0.1
+   Compiling strsim v0.11.1
+   Compiling fnv v1.0.7
+   Compiling unicode-xid v0.2.6
+   Compiling thiserror v1.0.69
+   Compiling crossbeam-utils v0.8.21
+   Compiling base64ct v1.6.0
+   Compiling heck v0.4.1
+   Compiling syn v1.0.109
+   Compiling syn v2.0.113
+   Compiling futures-core v0.3.31
+   Compiling ucd-trie v0.1.7
+   Compiling pem-rfc7468 v0.7.0
+   Compiling bumpalo v3.19.1
+   Compiling pest v2.8.5
+   Compiling bitflags v2.10.0
+   Compiling base16ct v0.2.0
+   Compiling futures-sink v0.3.31
+   Compiling wasm-bindgen v0.2.106
+   Compiling futures-channel v0.3.31
+   Compiling ff v0.13.1
+   Compiling aho-corasick v1.1.4
+   Compiling proc-macro-error-attr v1.0.4
+   Compiling slab v0.4.11
+   Compiling autocfg v1.5.0
+   Compiling regex-syntax v0.8.8
+   Compiling frunk_core v0.4.4
+   Compiling zerocopy v0.8.31
+   Compiling pin-utils v0.1.0
+   Compiling futures-task v0.3.31
+   Compiling winnow v0.7.14
+   Compiling futures-io v0.3.31
+   Compiling indexmap v2.12.1
+   Compiling pest_meta v2.8.5
+   Compiling wasmparser v0.202.0
+   Compiling num-traits v0.2.19
+   Compiling regex-automata v0.4.13
+   Compiling group v0.13.0
+   Compiling toml_parser v1.0.6+spec-1.1.0
+   Compiling rustc_version v0.4.1
+   Compiling proc-macro-error v1.0.4
+   Compiling smallvec v1.15.1
+   Compiling crunchy v0.2.4
+   Compiling leb128 v0.2.5
+   Compiling either v1.15.0
+   Compiling heck v0.5.0
+   Compiling wasm-bindgen-macro-support v0.2.106
+   Compiling darling_core v0.20.11
+   Compiling frunk_proc_macro_helpers v0.1.4
+   Compiling darling_core v0.21.3
+   Compiling toml_datetime v0.6.11
+   Compiling httparse v1.10.1
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling log v0.4.29
+   Compiling winnow v0.5.40
+   Compiling id-arena v2.2.1
+   Compiling toml_edit v0.23.10+spec-1.0.0
+   Compiling regex v1.12.2
+   Compiling pest_generator v2.8.5
+   Compiling wasm-encoder v0.202.0
+   Compiling serde_derive v1.0.228
+   Compiling zeroize_derive v1.4.3
+   Compiling thiserror-impl v1.0.69
+   Compiling futures-macro v0.3.31
+   Compiling strum_macros v0.26.4
+   Compiling toml_edit v0.19.15
+   Compiling spdx v0.10.9
+   Compiling zeroize v1.8.2
+   Compiling darling_macro v0.20.11
+   Compiling der v0.7.10
+   Compiling futures-util v0.3.31
+   Compiling wasm-bindgen-macro v0.2.106
+   Compiling curve25519-dalek v4.1.3
+   Compiling darling_macro v0.21.3
+   Compiling darling v0.20.11
+   Compiling crossbeam-epoch v0.9.18
+   Compiling spki v0.7.3
+   Compiling tracing-core v0.1.36
+   Compiling pkcs8 v0.10.2
+   Compiling linera-witty-macros v0.15.8
+   Compiling convert_case v0.10.0
+   Compiling js-sys v0.3.83
+   Compiling multer v3.1.0
+   Compiling lazy_static v1.5.0
+   Compiling libc v0.2.179
+   Compiling keccak v0.1.5
+   Compiling rayon-core v1.13.0
+   Compiling paste v1.0.15
+   Compiling strsim v0.10.0
+   Compiling arrayvec v0.7.6
+   Compiling tiny-keccak v2.0.2
+   Compiling parking_lot_core v0.9.12
+   Compiling percent-encoding v2.3.2
+   Compiling deluxe-core v0.5.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling proc-macro-crate v1.3.1
+   Compiling form_urlencoded v1.2.2
+   Compiling strum v0.26.3
+   Compiling Inflector v0.11.4
+   Compiling derive_more-impl v2.1.1
+   Compiling darling v0.21.3
+   Compiling crossbeam-deque v0.8.6
+   Compiling pest_derive v2.8.5
+   Compiling async-stream-impl v0.3.6
+   Compiling tracing-attributes v0.1.31
+   Compiling frunk_derives v0.4.4
+   Compiling frunk_proc_macros v0.1.4
+   Compiling proc-macro-crate v3.4.0
+   Compiling serde_derive_internals v0.29.1
+   Compiling concurrent-queue v2.5.0
+   Compiling linera-witty v0.15.8
+   Compiling encoding_rs v0.8.35
+   Compiling allocative v0.3.4
+   Compiling bytes v1.11.0
+   Compiling serdect v0.2.0
+   Compiling wit-parser v0.202.0
+   Compiling wasm-metadata v0.202.0
+   Compiling scopeguard v1.2.0
+   Compiling protobuf v2.28.0
+   Compiling crypto-common v0.1.6
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling crypto-bigint v0.5.5
+   Compiling sec1 v0.7.3
+   Compiling async-graphql-value v7.1.0
+error[E0658]: `let` expressions in this position are unstable
+  --> /home/uratmangun/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-graphql-value-7.1.0/src/value_serde.rs:32:24
+   |
+32 |                     && let Some(ConstValue::String(v)) = v.get(RAW_VALUE_TOKEN)
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: see issue #53667 <https://github.com/rust-lang/rust/issues/53667> for more information
+
+error[E0658]: `let` expressions in this position are unstable
+  --> /home/uratmangun/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-graphql-value-7.1.0/src/value_serde.rs:33:24
+   |
+33 |                     && let Ok(v) = serde_json::value::RawValue::from_string(v.clone())
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: see issue #53667 <https://github.com/rust-lang/rust/issues/53667> for more information
+
+   Compiling signature v2.2.0
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.10.9
+   Compiling http v1.4.0
+   Compiling rfc6979 v0.4.0
+For more information about this error, try `rustc --explain E0658`.
+error: could not compile `async-graphql-value` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `async-graphql-value` (lib) due to 2 previous errors
+
+
+## Assistant
+
+The build failed due to a Rust version incompatibility with `async-graphql-value`. I need to pin the `async-graphql` version to match what the `linera_name_system` contract uses.
+
+**Tool Call: contracts/linera_name_system/Cargo.toml**
+Status: Completed
+
+<file>
+00001| [package]
+00002| name = "linera_name_system"
+00003| version = "0.1.0"
+00004| edition = "2021"
+00005| 
+00006| [lib]
+00007| path = "src/lib.rs"
+00008| 
+00009| [[bin]]
+00010| name = "linera_name_system_contract"
+00011| path = "src/contract.rs"
+00012| 
+00013| [[bin]]
+00014| name = "linera_name_system_service"
+00015| path = "src/service.rs"
+00016| 
+00017| [dependencies]
+00018| linera-sdk = "0.15.8"
+00019| linera-views = "0.15.8"
+00020| serde = { version = "1.0", features = ["derive"] }
+00021| async-graphql = "=7.0.17"
+00022| async-graphql-value = "=7.0.17"
+00023| 
+00024| [dev-dependencies]
+00025| linera-sdk = { version = "0.15.8", features = ["test"] }
+00026| 
+00027| [profile.release]
+00028| debug = true
+00029| lto = true
+00030| opt-level = 'z'
+00031| strip = 'debuginfo'
+00032| 
+
+(End of file - total 32 lines)
+</file>
+
+**Tool Call: contracts/domain_checker/Cargo.toml**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/Cargo.toml
+```
+[package]
+name = "domain_checker"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "domain_checker_contract"
+path = "src/contract.rs"
+
+[[bin]]
+name = "domain_checker_service"
+path = "src/service.rs"
+
+[dependencies]
+linera-sdk = "0.15.8"
+linera-views = "0.15.8"
+serde = { version = "1.0", features = ["derive"] }
+async-graphql = "=7.0.17"
+async-graphql-value = "=7.0.17"
+
+[dev-dependencies]
+linera-sdk = { version = "0.15.8", features = ["test"] }
+
+[profile.release]
+debug = true
+lto = true
+opt-level = 'z'
+strip = 'debuginfo'
+
+```
+
+
+**Tool Call: Build domain_checker contract**
+Status: Completed
+
+    Updating crates.io index
+     Locking 2 packages to latest compatible versions
+ Downgrading async-graphql-parser v7.1.0 -> v7.0.17 (available: v7.1.0)
+ Downgrading async-graphql-value v7.1.0 -> v7.0.17 (available: v7.1.0)
+   Compiling elliptic-curve v0.13.8
+   Compiling async-graphql-value v7.0.17
+   Compiling frunk_core v0.4.4
+   Compiling ascii_utils v0.9.3
+   Compiling ryu v1.0.22
+   Compiling fastrand v2.3.0
+   Compiling if_chain v1.0.3
+   Compiling byteorder v1.5.0
+   Compiling spin v0.9.8
+   Compiling wit-bindgen-rust v0.24.0
+   Compiling log v0.4.29
+   Compiling mime v0.3.17
+   Compiling ruint-macro v1.2.1
+   Compiling smallvec v1.15.1
+   Compiling handlebars v5.1.2
+   Compiling merlin v3.0.0
+   Compiling tempfile v3.24.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling multer v3.1.0
+   Compiling parking_lot_core v0.9.12
+   Compiling ecdsa v0.16.9
+   Compiling lock_api v0.4.14
+   Compiling async-graphql-parser v7.0.17
+   Compiling ruint v1.17.2
+   Compiling fast_chemail v0.9.6
+   Compiling deluxe-macros v0.5.0
+   Compiling protobuf v2.28.0
+   Compiling k256 v0.13.4
+   Compiling anyhow v1.0.100
+   Compiling allocative v0.3.4
+   Compiling linera-witty v0.15.8
+   Compiling tracing v0.1.44
+   Compiling tiny-keccak v2.0.2
+   Compiling event-listener v5.4.1
+   Compiling tsify-macros v0.5.6
+   Compiling async-stream v0.3.6
+   Compiling wit-component v0.202.0
+   Compiling curve25519-dalek v4.1.3
+   Compiling rayon-core v1.13.0
+   Compiling serde_with_macros v3.16.1
+   Compiling rand_chacha v0.3.1
+   Compiling linera-witty-macros v0.15.8
+   Compiling frunk v0.4.4
+   Compiling libc v0.2.179
+   Compiling derive_more v2.1.1
+   Compiling paste v1.0.15
+   Compiling sharded-slab v0.1.7
+   Compiling tracing-serde v0.2.0
+   Compiling serde-wasm-bindgen v0.6.5
+   Compiling wit-bindgen-core v0.24.0
+   Compiling regex v1.12.2
+   Compiling matchers v0.2.0
+   Compiling futures-executor v0.3.31
+   Compiling ed25519 v2.2.3
+   Compiling ctor v0.1.26
+   Compiling derive_more-impl v1.0.0
+   Compiling async-trait v0.1.89
+   Compiling allocative_derive v0.3.3
+   Compiling synstructure v0.13.2
+   Compiling async-graphql-derive v7.0.17
+   Compiling linera-base v0.15.8
+   Compiling const-hex v1.17.0
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling wit-bindgen-rt v0.24.0
+   Compiling base64 v0.22.1
+   Compiling twox-hash v2.1.2
+   Compiling rustc-hash v2.1.1
+   Compiling static_assertions_next v1.1.2
+   Compiling wit-bindgen-rust-macro v0.24.0
+   Compiling futures-timer v3.0.3
+   Compiling prometheus v0.13.4
+   Compiling ruzstd v0.8.1
+   Compiling alloy-primitives v1.5.2
+   Compiling custom_debug_derive v0.6.2
+   Compiling tracing-subscriber v0.3.22
+   Compiling deluxe v0.5.0
+   Compiling tsify v0.5.6
+   Compiling ed25519-dalek v2.2.0
+   Compiling futures v0.3.31
+   Compiling serde_with v3.16.1
+   Compiling seize v0.4.9
+   Compiling rayon v1.11.0
+   Compiling rand v0.8.5
+   Compiling event-listener-strategy v0.5.4
+   Compiling parking_lot v0.12.5
+   Compiling chrono v0.4.42
+   Compiling trait-set v0.3.0
+   Compiling bcs v0.1.6
+   Compiling derive_more v1.0.0
+   Compiling serde-name v0.2.1
+   Compiling sync_wrapper v1.0.2
+   Compiling trait-variant v0.1.2
+   Compiling linera-views v0.15.8
+   Compiling tokio v1.49.0
+   Compiling serde_bytes v0.11.19
+   Compiling hex v0.4.3
+   Compiling is-terminal v0.4.17
+   Compiling bitflags v2.10.0
+   Compiling unicode-segmentation v1.12.0
+   Compiling async-lock v3.4.2
+   Compiling papaya v0.1.9
+   Compiling linera-views-derive v0.15.8
+   Compiling convert_case v0.6.0
+   Compiling sha3 v0.10.8
+   Compiling web-sys v0.3.83
+   Compiling sysinfo v0.33.1
+   Compiling itertools v0.14.0
+   Compiling linera-sdk v0.15.8
+   Compiling linked-hash-map v0.5.6
+   Compiling static_assertions v1.1.0
+   Compiling linera-sdk-derive v0.15.8
+   Compiling wit-bindgen v0.24.0
+   Compiling async-graphql v7.0.17
+   Compiling domain_checker v0.1.0 (/home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker)
+warning: unused variable: `name`
+  --> src/contract.rs:68:46
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                              ^^^^ help: try ignoring the field: `name: _`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `requester_chain`
+  --> src/contract.rs:68:52
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                                    ^^^^^^^^^^^^^^^ help: try ignoring the field: `requester_chain: _`
+
+warning: unused import: `DomainQueryResult`
+  --> src/service.rs:15:22
+   |
+15 | use domain_checker::{DomainQueryResult, Operation};
+   |                      ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+error[E0277]: the trait bound `DomainQueryResult: OutputType` is not satisfied
+ --> src/state.rs:5:20
+  |
+5 | #[derive(RootView, async_graphql::SimpleObject)]
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `OutputType` is not implemented for `DomainQueryResult`
+  |
+  = help: the following other types implement trait `OutputType`:
+            &'a [T]
+            &T
+            Arc<T>
+            Arc<[T]>
+            BTreeMap<K, V>
+            BTreeSet<T>
+            BlobContent
+            BlobId
+          and 121 others
+  = note: required for `MapView<ViewContext<(), linera_sdk::KeyValueStore>, std::string::String, DomainQueryResult>` to implement `OutputType`
+  = note: 1 redundant requirement hidden
+  = note: required for `&MapView<ViewContext<(), linera_sdk::KeyValueStore>, std::string::String, DomainQueryResult>` to implement `OutputType`
+  = note: this error originates in the derive macro `async_graphql::SimpleObject` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `DomainQueryResult: OutputType` is not satisfied
+  --> src/state.rs:10:25
+   |
+10 |     pub domain_queries: MapView<String, DomainQueryResult>,
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `OutputType` is not implemented for `DomainQueryResult`
+   |
+   = help: the following other types implement trait `OutputType`:
+             &'a [T]
+             &T
+             Arc<T>
+             Arc<[T]>
+             BTreeMap<K, V>
+             BTreeSet<T>
+             BlobContent
+             BlobId
+           and 121 others
+   = note: required for `MapView<ViewContext<(), linera_sdk::KeyValueStore>, std::string::String, DomainQueryResult>` to implement `OutputType`
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `domain_checker` (bin "domain_checker_contract") generated 2 warnings
+error: could not compile `domain_checker` (bin "domain_checker_contract") due to 2 previous errors; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error[E0277]: the trait bound `DomainQueryResult: OutputType` is not satisfied
+ --> src/state.rs:5:20
+  |
+5 | #[derive(RootView, async_graphql::SimpleObject)]
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `OutputType` is not implemented for `DomainQueryResult`
+  |
+  = help: the following other types implement trait `OutputType`:
+            &'a [T]
+            &T
+            Arc<T>
+            Arc<[T]>
+            BTreeMap<K, V>
+            BTreeSet<T>
+            BlobContent
+            BlobId
+          and 123 others
+  = note: required for `MapView<ViewContext<(), linera_sdk::KeyValueStore>, std::string::String, DomainQueryResult>` to implement `OutputType`
+  = note: 1 redundant requirement hidden
+  = note: required for `&MapView<ViewContext<(), linera_sdk::KeyValueStore>, std::string::String, DomainQueryResult>` to implement `OutputType`
+  = note: this error originates in the derive macro `async_graphql::SimpleObject` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `DomainQueryResult: OutputType` is not satisfied
+  --> src/state.rs:10:25
+   |
+10 |     pub domain_queries: MapView<String, DomainQueryResult>,
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `OutputType` is not implemented for `DomainQueryResult`
+   |
+   = help: the following other types implement trait `OutputType`:
+             &'a [T]
+             &T
+             Arc<T>
+             Arc<[T]>
+             BTreeMap<K, V>
+             BTreeSet<T>
+             BlobContent
+             BlobId
+           and 123 others
+   = note: required for `MapView<ViewContext<(), linera_sdk::KeyValueStore>, std::string::String, DomainQueryResult>` to implement `OutputType`
+
+warning: `domain_checker` (bin "domain_checker_service") generated 1 warning
+error: could not compile `domain_checker` (bin "domain_checker_service") due to 2 previous errors; 1 warning emitted
+
+
+## Assistant
+
+I need to fix the `DomainQueryResult` to implement `OutputType` for async-graphql. Let me update the state and lib files.
+
+**Tool Call: contracts/domain_checker/src/lib.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/lib.rs
+```
+/// Domain query result stored in state
+#[derive(Clone, Debug, Default, Deserialize, Serialize, async_graphql::SimpleObject)]
+pub struct DomainQueryResult {
+    pub name: String,
+    pub owner: Option<String>,
+    pub is_available: bool,
+    pub expiration: Option<u64>,
+    pub query_timestamp: u64,
+}
+```
+
+
+**Tool Call: contracts/domain_checker/src/state.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/state.rs
+```
+use linera_sdk::views::{linera_views, MapView, RootView, ViewStorageContext};
+use domain_checker::DomainQueryResult;
+
+/// State for the domain checker contract
+#[derive(RootView)]
+#[view(context = ViewStorageContext)]
+pub struct DomainCheckerState {
+    /// Map of domain names to their query results
+    /// Key: domain name, Value: query result from LNS registry
+    pub domain_queries: MapView<String, DomainQueryResult>,
+    /// Pending queries that are waiting for responses
+    pub pending_queries: MapView<String, u64>, // domain name -> request timestamp
+}
+```
+
+
+**Tool Call: Build domain_checker contract**
+Status: Completed
+
+   Compiling domain_checker v0.1.0 (/home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker)
+error[E0252]: the name `DomainQueryResult` is defined multiple times
+ --> src/state.rs:2:5
+  |
+1 | use domain_checker::DomainQueryResult;
+  |     --------------------------------- previous import of the type `DomainQueryResult` here
+2 | use domain_checker::DomainQueryResult;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `DomainQueryResult` reimported here
+  |
+  = note: `DomainQueryResult` must be defined only once in the type namespace of this module
+
+warning: unused import: `domain_checker::DomainQueryResult`
+ --> src/state.rs:2:5
+  |
+2 | use domain_checker::DomainQueryResult;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `name`
+  --> src/contract.rs:68:46
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                              ^^^^ help: try ignoring the field: `name: _`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `requester_chain`
+  --> src/contract.rs:68:52
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                                    ^^^^^^^^^^^^^^^ help: try ignoring the field: `requester_chain: _`
+
+warning: unused import: `DomainQueryResult`
+  --> src/service.rs:15:22
+   |
+15 | use domain_checker::{DomainQueryResult, Operation};
+   |                      ^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0252`.
+warning: `domain_checker` (bin "domain_checker_contract") generated 3 warnings
+error: could not compile `domain_checker` (bin "domain_checker_contract") due to 1 previous error; 3 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `domain_checker` (bin "domain_checker_service") generated 2 warnings (1 duplicate)
+error: could not compile `domain_checker` (bin "domain_checker_service") due to 1 previous error; 2 warnings emitted
+
+
+**Tool Call: contracts/domain_checker/src/state.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/state.rs
+```
+use linera_sdk::views::{linera_views, MapView, RootView, ViewStorageContext};
+use domain_checker::DomainQueryResult;
+
+/// State for the domain checker contract
+#[derive(RootView)]
+#[view(context = ViewStorageContext)]
+pub struct DomainCheckerState {
+    /// Map of domain names to their query results
+    /// Key: domain name, Value: query result from LNS registry
+    pub domain_queries: MapView<String, DomainQueryResult>,
+    /// Pending queries that are waiting for responses
+    pub pending_queries: MapView<String, u64>, // domain name -> request timestamp
+}
+
+```
+
+
+**Tool Call: Build domain_checker contract**
+Status: Completed
+
+   Compiling domain_checker v0.1.0 (/home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker)
+warning: unused variable: `name`
+  --> src/contract.rs:68:46
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                              ^^^^ help: try ignoring the field: `name: _`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `requester_chain`
+  --> src/contract.rs:68:52
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                                    ^^^^^^^^^^^^^^^ help: try ignoring the field: `requester_chain: _`
+
+warning: unused import: `DomainQueryResult`
+  --> src/service.rs:15:22
+   |
+15 | use domain_checker::{DomainQueryResult, Operation};
+   |                      ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: `domain_checker` (bin "domain_checker_contract") generated 2 warnings
+warning: `domain_checker` (bin "domain_checker_service") generated 1 warning (run `cargo fix --bin "domain_checker_service"` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 21.88s
+
+
+## Assistant
+
+The `domain_checker` contract compiled successfully. Now let me build the `linera_name_system` contract to verify the changes work, then create the frontend component.
+
+**Tool Call: Build linera_name_system contract**
+Status: Completed
+
+   Compiling linera_name_system v0.1.0 (/home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/linera_name_system)
+    Finished `release` profile [optimized + debuginfo] target(s) in 22.40s
+
+
+**Tool Call: 1 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Build contracts to verify compilation",
+    "id": "7",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "8",
+    "priority": "medium",
+    "status": "in_progress"
+  }
+]
+
+**Tool Call: src/components/counter-app.tsx**
+Status: Completed
+
+<file>
+00001| "use client";
+00002| 
+00003| import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+00004| import { useDynamicContext, useIsLoggedIn } from "@dynamic-labs/sdk-react-core";
+00005| import { DynamicWidget } from "@dynamic-labs/sdk-react-core";
+00006| import { lineraAdapter, type LineraProvider } from "@/lib/linera-adapter";
+00007| 
+00008| interface BlockLog {
+00009|   height: number;
+00010|   hash: string;
+00011| }
+00012| 
+00013| interface DomainQueryResult {
+00014|   Owner?: string | null;
+00015|   IsAvailable?: boolean;
+00016|   domain?: ExtendedDomainInfo;
+00017| }
+00018| 
+00019| interface DomainInfo {
+00020|   name: string;
+00021|   owner: string;
+00022| }
+00023| 
+00024| interface ExtendedDomainInfo {
+00025|   name: string;
+00026|   owner: string;
+00027|   ownerChainId: string;
+00028|   expiration: number;
+00029|   isExpired: boolean;
+00030|   price: string;
+00031|   isForSale: boolean;
+00032|   value: string;
+00033| }
+00034| 
+00035| export default function CounterApp() {
+00036|   const { primaryWallet } = useDynamicContext();
+00037|   const isLoggedIn = useIsLoggedIn();
+00038|   const [mounted, setMounted] = useState(false);
+00039|   const [chainId, setChainId] = useState<string | null>(null);
+00040|   const [registryChainId, setRegistryChainId] = useState<string | null>(null);
+00041|   const [logs, setLogs] = useState<BlockLog[]>([]);
+00042|   const [error, setError] = useState<string | null>(null);
+00043| 
+00044|   const providerRef = useRef<LineraProvider | null>(null);
+00045|   const [chainConnected, setChainConnected] = useState(false);
+00046|   const [appConnected, setAppConnected] = useState(false);
+00047|   const [isAutoConnecting, setIsAutoConnecting] = useState(false);
+00048| 
+00049|   // Domain registration state
+00050|   const [domainName, setDomainName] = useState("");
+00051|   const [searchResult, setSearchResult] = useState<DomainQueryResult | null>(
+00052|     null,
+00053|   );
+00054|   const [isSearching, setIsSearching] = useState(false);
+00055|   const [isRegistering, setIsRegistering] = useState(false);
+00056|   const [allDomains, setAllDomains] = useState<ExtendedDomainInfo[]>([]);
+00057|   const [isLoadingDomains, setIsLoadingDomains] = useState(false);
+00058|   const [balance, setBalance] = useState<string | null>(null);
+00059|   const [isLoadingBalance, setIsLoadingBalance] = useState(false);
+00060| 
+00061|   // Domain management state
+00062|   const [extendYears, setExtendYears] = useState(1);
+00063|   const [isExtending, setIsExtending] = useState(false);
+00064|   const [newPrice, setNewPrice] = useState("");
+00065|   const [isSettingPrice, setIsSettingPrice] = useState(false);
+00066|   const [isBuying, setIsBuying] = useState(false);
+00067|   const [newValue, setNewValue] = useState("");
+00068|   const [isSettingValue, setIsSettingValue] = useState(false);
+00069|   const [selectedDomain, setSelectedDomain] =
+00070|     useState<ExtendedDomainInfo | null>(null);
+00071|   const [showDomainModal, setShowDomainModal] = useState(false);
+00072|   const [transferAddress, setTransferAddress] = useState("");
+00073|   const [isTransferring, setIsTransferring] = useState(false);
+00074| 
+00075|   // Withdraw state
+00076|   const [claimableBalance, setClaimableBalance] = useState<string | null>(null);
+00077|   const [isLoadingClaimable, setIsLoadingClaimable] = useState(false);
+00078|   const [isWithdrawing, setIsWithdrawing] = useState(false);
+00079| 
+00080|   const applicationId = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
+00081| 
+00082|   // Registration/Extension fee in LINERA (0.1 per year)
+00083|   const REGISTRATION_FEE_LINERA = 0.1;
+00084| 
+00085|   useEffect(() => {
+00086|     setMounted(true);
+00087|     setChainConnected(lineraAdapter.isChainConnected());
+00088|     setAppConnected(lineraAdapter.isApplicationSet());
+00089|   }, []);
+00090| 
+00091|   // Auto-connect to Linera when wallet is connected
+00092|   const autoConnect = useCallback(async () => {
+00093|     if (!primaryWallet || !applicationId || isAutoConnecting) return;
+00094|     if (chainConnected && appConnected) return;
+00095| 
+00096|     setIsAutoConnecting(true);
+00097|     setError(null);
+00098| 
+00099|     try {
+00100|       // Connect to Linera chain
+00101|       if (!chainConnected) {
+00102|         const provider = await lineraAdapter.connect(primaryWallet);
+00103|         providerRef.current = provider;
+00104|         setChainConnected(true);
+00105|         setChainId(provider.chainId);
+00106|       }
+00107| 
+00108|       // Connect to application
+00109|       if (!appConnected && applicationId) {
+00110|         await lineraAdapter.setApplication(applicationId);
+00111|         setAppConnected(true);
+00112|       }
+00113|     } catch (err) {
+00114|       console.error("Auto-connect failed:", err);
+00115|       setError(
+00116|         err instanceof Error ? err.message : "Failed to auto-connect to Linera",
+00117|       );
+00118|     } finally {
+00119|       setIsAutoConnecting(false);
+00120|     }
+00121|   }, [
+00122|     primaryWallet,
+00123|     applicationId,
+00124|     chainConnected,
+00125|     appConnected,
+00126|     isAutoConnecting,
+00127|   ]);
+00128| 
+00129|   useEffect(() => {
+00130|     if (mounted && isLoggedIn && primaryWallet && !chainConnected) {
+00131|       autoConnect();
+00132|     }
+00133|   }, [mounted, isLoggedIn, primaryWallet, chainConnected, autoConnect]);
+00134| 
+00135|   // Reset Linera adapter when Dynamic wallet disconnects
+00136|   useEffect(() => {
+00137|     if (!isLoggedIn || !primaryWallet) {
+00138|       lineraAdapter.reset();
+00139|       providerRef.current = null;
+00140|       setChainConnected(false);
+00141|       setAppConnected(false);
+00142|       setChainId(null);
+00143|       setRegistryChainId(null);
+00144|       setLogs([]);
+00145|       setError(null);
+00146|       setSearchResult(null);
+00147|       setAllDomains([]);
+00148|       setBalance(null);
+00149|       setClaimableBalance(null);
+00150|     }
+00151|   }, [isLoggedIn, primaryWallet]);
+00152| 
+00153|   useEffect(() => {
+00154|     if (!chainConnected || !providerRef.current) return;
+00155|     const client = providerRef.current.client;
+00156|     if (!client || typeof client.onNotification !== "function") return;
+00157| 
+00158|     const handler = (notification: unknown) => {
+00159|       const newBlock: BlockLog | undefined = (
+00160|         notification as { reason: { NewBlock: BlockLog } }
+00161|       )?.reason?.NewBlock;
+00162|       if (!newBlock) return;
+00163|       setLogs((prev) => [newBlock, ...prev]);
+00164|     };
+00165| 
+00166|     try {
+00167|       client.onNotification(handler);
+00168|     } catch (err) {
+00169|       console.error("Failed to set notification handler:", err);
+00170|     }
+00171|     return () => {};
+00172|   }, [chainConnected]);
+00173| 
+00174|   // Fetch chain balance
+00175|   const fetchBalance = useCallback(async () => {
+00176|     if (!chainConnected) return;
+00177|     setIsLoadingBalance(true);
+00178| 
+00179|     try {
+00180|       const bal = await lineraAdapter.getBalance();
+00181|       setBalance(bal);
+00182|     } catch (err) {
+00183|       console.error("Failed to fetch balance:", err);
+00184|     } finally {
+00185|       setIsLoadingBalance(false);
+00186|     }
+00187|   }, [chainConnected]);
+00188| 
+00189|   // Fetch registry chain ID
+00190|   const fetchRegistryInfo = useCallback(async () => {
+00191|     if (!appConnected) return;
+00192| 
+00193|     try {
+00194|       const registryResult = await lineraAdapter.queryApplication<{
+00195|         data?: { registryChainId: string | null };
+00196|         errors?: Array<{ message: string }>;
+00197|       }>({
+00198|         query: `query { registryChainId }`,
+00199|       });
+00200|       if (registryResult.data?.registryChainId) {
+
+(File has more lines. Use 'offset' parameter to read beyond line 200)
+</file>
+
+**Tool Call: src/components/counter-app.tsx**
+Status: Completed
+
+<file>
+00201|         setRegistryChainId(registryResult.data.registryChainId);
+00202|       }
+00203|     } catch (err) {
+00204|       console.error("Failed to fetch registry chain ID:", err);
+00205|     }
+00206|   }, [appConnected]);
+00207| 
+00208|   // Fetch all registered domains from registry chain
+00209|   const fetchAllDomains = useCallback(async () => {
+00210|     if (!appConnected || !registryChainId) return;
+00211|     setIsLoadingDomains(true);
+00212| 
+00213|     try {
+00214|       // Query the registry chain directly for authoritative data
+00215|       const result = await lineraAdapter.queryApplicationOnChain<{
+00216|         data?: { allDomains: ExtendedDomainInfo[] };
+00217|         errors?: Array<{ message: string }>;
+00218|       }>(
+00219|         registryChainId,
+00220|         applicationId,
+00221|         `query { allDomains { name owner ownerChainId expiration isExpired price isForSale value } }`,
+00222|       );
+00223|       if (result.errors?.length) {
+00224|         throw new Error(result.errors[0].message);
+00225|       }
+00226|       setAllDomains(result.data?.allDomains || []);
+00227|     } catch (err) {
+00228|       console.error("Failed to fetch all domains:", err);
+00229|     } finally {
+00230|       setIsLoadingDomains(false);
+00231|     }
+00232|   }, [appConnected, registryChainId, applicationId]);
+00233| 
+00234|   // Fetch claimable balance for domain sales
+00235|   const fetchClaimableBalance = useCallback(async () => {
+00236|     if (!appConnected || !registryChainId || !primaryWallet?.address) return;
+00237|     setIsLoadingClaimable(true);
+00238| 
+00239|     try {
+00240|       const result = await lineraAdapter.queryApplicationOnChain<{
+00241|         data?: { claimableBalance: string };
+00242|         errors?: Array<{ message: string }>;
+00243|       }>(
+00244|         registryChainId,
+00245|         applicationId,
+00246|         `query { claimableBalance(owner: "${primaryWallet.address}") }`,
+00247|       );
+00248|       if (result.errors?.length) {
+00249|         throw new Error(result.errors[0].message);
+00250|       }
+00251|       setClaimableBalance(result.data?.claimableBalance || "0");
+00252|     } catch (err) {
+00253|       console.error("Failed to fetch claimable balance:", err);
+00254|       setClaimableBalance("0");
+00255|     } finally {
+00256|       setIsLoadingClaimable(false);
+00257|     }
+00258|   }, [appConnected, registryChainId, applicationId, primaryWallet?.address]);
+00259| 
+00260|   // Fetch balance when chain is connected
+00261|   useEffect(() => {
+00262|     if (chainConnected) {
+00263|       fetchBalance();
+00264|     }
+00265|   }, [chainConnected, fetchBalance]);
+00266| 
+00267|   // Fetch registry info when app is connected
+00268|   useEffect(() => {
+00269|     if (appConnected) {
+00270|       fetchRegistryInfo();
+00271|     }
+00272|   }, [appConnected, fetchRegistryInfo]);
+00273| 
+00274|   // Fetch all domains when registry chain ID is available
+00275|   useEffect(() => {
+00276|     if (appConnected && registryChainId) {
+00277|       fetchAllDomains();
+00278|     }
+00279|   }, [appConnected, registryChainId, fetchAllDomains]);
+00280| 
+00281|   // Fetch claimable balance when app is connected and wallet is available
+00282|   useEffect(() => {
+00283|     if (appConnected && registryChainId && primaryWallet?.address) {
+00284|       fetchClaimableBalance();
+00285|     }
+00286|   }, [
+00287|     appConnected,
+00288|     registryChainId,
+00289|     primaryWallet?.address,
+00290|     fetchClaimableBalance,
+00291|   ]);
+00292| 
+00293|   // Update selectedDomain when allDomains changes (to reflect updates after operations)
+00294|   const selectedDomainName = selectedDomain?.name;
+00295|   useEffect(() => {
+00296|     if (selectedDomainName && allDomains.length > 0) {
+00297|       const updatedDomain = allDomains.find(
+00298|         (d) => d.name === selectedDomainName,
+00299|       );
+00300|       if (updatedDomain) {
+00301|         setSelectedDomain(updatedDomain);
+00302|       }
+00303|     }
+00304|   }, [allDomains, selectedDomainName]);
+00305| 
+00306|   async function handleWithdraw() {
+00307|     if (!claimableBalance || claimableBalance === "0") {
+00308|       setError("No balance to withdraw");
+00309|       return;
+00310|     }
+00311|     setIsWithdrawing(true);
+00312|     setError(null);
+00313| 
+00314|     try {
+00315|       const result = await lineraAdapter.queryApplication<{
+00316|         data?: { withdraw: boolean };
+00317|         errors?: Array<{ message: string }>;
+00318|       }>({
+00319|         query: `mutation { withdraw }`,
+00320|       });
+00321| 
+00322|       if (result.errors?.length) {
+00323|         throw new Error(result.errors[0].message);
+00324|       }
+00325| 
+00326|       if (result.data?.withdraw) {
+00327|         alert(
+00328|           `Withdrawal of ${formatPrice(claimableBalance)} LINERA submitted!`,
+00329|         );
+00330|         setTimeout(() => {
+00331|           fetchClaimableBalance();
+00332|           fetchBalance();
+00333|         }, 3000);
+00334|       }
+00335|     } catch (err) {
+00336|       console.error("Failed to withdraw:", err);
+00337|       setError(err instanceof Error ? err.message : "Failed to withdraw");
+00338|     } finally {
+00339|       setIsWithdrawing(false);
+00340|     }
+00341|   }
+00342| 
+00343|   async function handleCheckDomain() {
+00344|     if (!domainName.trim()) {
+00345|       setError("Please enter a domain name");
+00346|       return;
+00347|     }
+00348|     if (!registryChainId) {
+00349|       setError("Registry chain ID not available yet");
+00350|       return;
+00351|     }
+00352|     setIsSearching(true);
+00353|     setError(null);
+00354|     setSearchResult(null);
+00355| 
+00356|     try {
+00357|       // Query the registry chain directly for authoritative data
+00358|       const result = await lineraAdapter.queryApplicationOnChain<{
+00359|         data?: { domain?: ExtendedDomainInfo; isAvailable: boolean };
+00360|         errors?: Array<{ message: string }>;
+00361|       }>(
+00362|         registryChainId,
+00363|         applicationId,
+00364|         `query { domain(name: "${domainName.trim()}") { name owner ownerChainId expiration isExpired price isForSale value } isAvailable(name: "${domainName.trim()}") }`,
+00365|       );
+00366|       if (result.errors?.length) {
+00367|         throw new Error(result.errors[0].message);
+00368|       }
+00369|       setSearchResult({
+00370|         IsAvailable: result.data?.isAvailable,
+00371|         domain: result.data?.domain,
+00372|       });
+00373|     } catch (err) {
+00374|       console.error("Failed to check domain:", err);
+00375|       setError(
+00376|         err instanceof Error
+00377|           ? err.message
+00378|           : "Failed to check domain availability",
+00379|       );
+00380|     } finally {
+00381|       setIsSearching(false);
+00382|     }
+00383|   }
+00384| 
+00385|   async function handleRegisterDomain() {
+00386|     if (!domainName.trim()) {
+00387|       setError("Please enter a domain name");
+00388|       return;
+00389|     }
+00390|     if (!registryChainId) {
+00391|       setError("Registry chain ID not available yet");
+00392|       return;
+00393|     }
+00394| 
+00395|     // Confirm with the user including the fee
+00396|     if (
+00397|       !confirm(
+00398|         `Register ${domainName.trim()}.linera for ${REGISTRATION_FEE_LINERA} LINERA?`,
+00399|       )
+00400|     ) {
+00401|       return;
+00402|     }
+00403| 
+00404|     setIsRegistering(true);
+00405|     setError(null);
+00406| 
+00407|     try {
+00408|       const result = await lineraAdapter.queryApplication<{
+00409|         data?: { register: boolean };
+00410|         errors?: Array<{ message: string }>;
+00411|       }>({
+00412|         query: `mutation { register(name: "${domainName.trim()}") }`,
+00413|       });
+00414| 
+00415|       if (result.errors?.length) {
+00416|         throw new Error(result.errors[0].message);
+00417|       }
+00418| 
+00419|       if (result.data?.register) {
+00420|         setSearchResult({ IsAvailable: false });
+00421|         setError(null);
+00422|         alert(
+00423|           `Domain ${domainName.trim()}.linera registration submitted! Waiting for cross-chain sync...`,
+00424|         );
+00425| 
+00426|         // Poll for the registration to appear on the registry chain
+00427|         // Cross-chain messages may take several seconds to propagate
+00428|         let attempts = 0;
+00429|         const maxAttempts = 10;
+00430|         const pollInterval = 3000; // 3 seconds between polls
+00431| 
+00432|         const pollRegistration = async (): Promise<boolean> => {
+00433|           attempts++;
+00434|           console.log(
+00435|             `Polling for registration (attempt ${attempts}/${maxAttempts})...`,
+00436|           );
+00437| 
+00438|           try {
+00439|             const checkResult = await lineraAdapter.queryApplicationOnChain<{
+00440|               data?: { isAvailable: boolean };
+00441|               errors?: Array<{ message: string }>;
+00442|             }>(
+00443|               registryChainId,
+00444|               applicationId,
+00445|               `query { isAvailable(name: "${domainName.trim()}") }`,
+00446|             );
+00447| 
+00448|             // If domain is no longer available, registration succeeded
+00449|             if (checkResult.data?.isAvailable === false) {
+00450|               console.log("Registration confirmed on registry chain!");
+00451|               return true;
+00452|             }
+00453|           } catch (err) {
+00454|             console.log("Poll attempt failed:", err);
+00455|           }
+00456| 
+00457|           if (attempts < maxAttempts) {
+00458|             await new Promise((resolve) => setTimeout(resolve, pollInterval));
+00459|             return pollRegistration();
+00460|           }
+00461| 
+00462|           return false;
+00463|         };
+00464| 
+00465|         // Start polling after a short initial delay
+00466|         setTimeout(async () => {
+00467|           const confirmed = await pollRegistration();
+00468|           if (confirmed) {
+00469|             fetchAllDomains();
+00470|           } else {
+00471|             console.log(
+00472|               "Registration not yet confirmed. Please refresh manually.",
+00473|             );
+00474|             fetchAllDomains(); // Try to fetch anyway
+00475|           }
+00476|         }, 2000);
+00477|       }
+00478|     } catch (err) {
+00479|       console.error("Failed to register domain:", err);
+00480|       setError(
+00481|         err instanceof Error ? err.message : "Failed to register domain",
+00482|       );
+00483|     } finally {
+00484|       setIsRegistering(false);
+00485|     }
+00486|   }
+00487| 
+00488|   async function handleLookupOwner() {
+00489|     if (!domainName.trim()) {
+00490|       setError("Please enter a domain name");
+00491|       return;
+00492|     }
+00493|     if (!registryChainId) {
+00494|       setError("Registry chain ID not available yet");
+00495|       return;
+00496|     }
+00497|     setIsSearching(true);
+00498|     setError(null);
+00499|     setSearchResult(null);
+00500| 
+
+(File has more lines. Use 'offset' parameter to read beyond line 500)
+</file>
+
+**Tool Call: src/components/counter-app.tsx**
+Status: Completed
+
+<file>
+01301|                     {isLoadingBalance
+01302|                       ? "Loading..."
+01303|                       : balance !== null
+01304|                         ? `${balance} LINERA`
+01305|                         : "..."}
+01306|                   </code>
+01307|                   <button
+01308|                     type="button"
+01309|                     onClick={fetchBalance}
+01310|                     disabled={isLoadingBalance}
+01311|                     className="ml-2 rounded bg-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-300 disabled:opacity-50 dark:bg-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-600"
+01312|                   >
+01313|                     Refresh
+01314|                   </button>
+01315|                 </p>
+01316|                 {registryChainId && (
+01317|                   <p className="text-zinc-700 dark:text-zinc-300">
+01318|                     <span className="font-medium">Registry Chain ID:</span>{" "}
+01319|                     <code className="break-all rounded bg-zinc-100 px-2 py-1 font-mono text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+01320|                       {registryChainId.slice(0, 16)}...
+01321|                       {registryChainId.slice(-8)}
+01322|                     </code>
+01323|                   </p>
+01324|                 )}
+01325|                 <p className="text-zinc-500 dark:text-zinc-500">
+01326|                   Application ID:{" "}
+01327|                   <code className="break-all font-mono text-xs">
+01328|                     {applicationId.slice(0, 16)}...{applicationId.slice(-8)}
+01329|                   </code>
+01330|                 </p>
+01331|               </div>
+01332| 
+01333|               {logs.length > 0 && (
+01334|                 <>
+01335|                   <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+01336|                     Recent Blocks
+01337|                   </h3>
+01338|                   <ul className="max-h-32 space-y-1 overflow-y-auto">
+01339|                     {logs.slice(0, 5).map((log, index) => (
+01340|                       <li
+01341|                         key={`${log.hash}-${index}`}
+01342|                         className="rounded bg-zinc-100 px-2 py-1 font-mono text-xs dark:bg-zinc-800"
+01343|                       >
+01344|                         <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+01345|                           {log.height}
+01346|                         </span>
+01347|                         :{" "}
+01348|                         <span className="text-zinc-500 dark:text-zinc-500">
+01349|                           {log.hash.slice(0, 16)}...
+01350|                         </span>
+01351|                       </li>
+01352|                     ))}
+01353|                   </ul>
+01354|                 </>
+01355|               )}
+01356|             </div>
+01357|           )}
+01358|         </div>
+01359|       </div>
+01360|     </div>
+01361|   );
+01362| }
+01363| 
+
+(End of file - total 1363 lines)
+</file>
+
+**Tool Call: src/components/domain-checker-app.tsx**
+Status: Completed
+
+
+This file has errors, please fix
+<file_diagnostics>
+ERROR [307:9] A form label must be associated with an input.
+</file_diagnostics>
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/src/components/domain-checker-app.tsx
+```
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { useDynamicContext, useIsLoggedIn } from "@dynamic-labs/sdk-react-core";
+import { lineraAdapter } from "@/lib/linera-adapter";
+
+interface DomainCheckerQueryResult {
+  name: string;
+  owner: string | null;
+  isAvailable: boolean;
+  expiration: number | null;
+  queryTimestamp: number;
+}
+
+interface Props {
+  // The application ID of the domain_checker contract
+  domainCheckerAppId: string;
+  // The registry chain ID where LNS is deployed
+  registryChainId: string;
+}
+
+/**
+ * Component to test cross-chain domain queries via the domain_checker smart contract.
+ * 
+ * This demonstrates the Request-Response pattern:
+ * 1. User triggers CheckOwnership operation on domain_checker contract
+ * 2. domain_checker sends RequestCheckOwnership message to LNS registry chain
+ * 3. LNS registry responds with OwnershipResponse message
+ * 4. domain_checker stores the result in its state
+ * 5. UI polls for the result
+ */
+export default function DomainCheckerApp({ domainCheckerAppId, registryChainId }: Props) {
+  const { primaryWallet } = useDynamicContext();
+  const isLoggedIn = useIsLoggedIn();
+  const [mounted, setMounted] = useState(false);
+  
+  // Query state
+  const [domainName, setDomainName] = useState("");
+  const [isQuerying, setIsQuerying] = useState(false);
+  const [isPending, setIsPending] = useState(false);
+  const [queryResult, setQueryResult] = useState<DomainCheckerQueryResult | null>(null);
+  const [cachedQueries, setCachedQueries] = useState<DomainCheckerQueryResult[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [currentChainId, setCurrentChainId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Fetch current chain ID
+  const fetchCurrentChainId = useCallback(async () => {
+    if (!domainCheckerAppId) return;
+    
+    try {
+      const result = await lineraAdapter.queryApplication<{
+        data?: { currentChainId: string };
+        errors?: Array<{ message: string }>;
+      }>({
+        query: `query { currentChainId }`,
+      });
+      
+      if (result.data?.currentChainId) {
+        setCurrentChainId(result.data.currentChainId);
+      }
+    } catch (err) {
+      console.error("Failed to fetch current chain ID:", err);
+    }
+  }, [domainCheckerAppId]);
+
+  // Fetch all cached query results
+  const fetchCachedQueries = useCallback(async () => {
+    if (!domainCheckerAppId) return;
+    
+    try {
+      const result = await lineraAdapter.queryApplication<{
+        data?: { allCachedQueries: DomainCheckerQueryResult[] };
+        errors?: Array<{ message: string }>;
+      }>({
+        query: `query { allCachedQueries { name owner isAvailable expiration queryTimestamp } }`,
+      });
+      
+      if (result.data?.allCachedQueries) {
+        setCachedQueries(result.data.allCachedQueries);
+      }
+    } catch (err) {
+      console.error("Failed to fetch cached queries:", err);
+    }
+  }, [domainCheckerAppId]);
+
+  // Check if a query is pending
+  const checkPendingQuery = useCallback(async (name: string): Promise<boolean> => {
+    if (!domainCheckerAppId) return false;
+    
+    try {
+      const result = await lineraAdapter.queryApplication<{
+        data?: { isQueryPending: boolean };
+        errors?: Array<{ message: string }>;
+      }>({
+        query: `query { isQueryPending(name: "${name}") }`,
+      });
+      
+      return result.data?.isQueryPending ?? false;
+    } catch (err) {
+      console.error("Failed to check pending query:", err);
+      return false;
+    }
+  }, [domainCheckerAppId]);
+
+  // Fetch query result for a specific domain
+  const fetchQueryResult = useCallback(async (name: string): Promise<DomainCheckerQueryResult | null> => {
+    if (!domainCheckerAppId) return null;
+    
+    try {
+      const result = await lineraAdapter.queryApplication<{
+        data?: { domainQuery: DomainCheckerQueryResult | null };
+        errors?: Array<{ message: string }>;
+      }>({
+        query: `query { domainQuery(name: "${name}") { name owner isAvailable expiration queryTimestamp } }`,
+      });
+      
+      return result.data?.domainQuery ?? null;
+    } catch (err) {
+      console.error("Failed to fetch query result:", err);
+      return null;
+    }
+  }, [domainCheckerAppId]);
+
+  // Initialize
+  useEffect(() => {
+    if (mounted && isLoggedIn && primaryWallet && domainCheckerAppId) {
+      fetchCurrentChainId();
+      fetchCachedQueries();
+    }
+  }, [mounted, isLoggedIn, primaryWallet, domainCheckerAppId, fetchCurrentChainId, fetchCachedQueries]);
+
+  // Handle cross-chain domain query
+  async function handleCheckOwnership() {
+    if (!domainName.trim()) {
+      setError("Please enter a domain name");
+      return;
+    }
+    if (!registryChainId) {
+      setError("Registry chain ID not available");
+      return;
+    }
+    if (!domainCheckerAppId) {
+      setError("Domain checker application ID not set");
+      return;
+    }
+
+    setIsQuerying(true);
+    setIsPending(false);
+    setError(null);
+    setQueryResult(null);
+
+    try {
+      // Step 1: Send CheckOwnership operation to domain_checker contract
+      // This will trigger a cross-chain message to the LNS registry
+      const result = await lineraAdapter.queryApplication<{
+        data?: { checkOwnership: boolean };
+        errors?: Array<{ message: string }>;
+      }>({
+        query: `mutation { checkOwnership(name: "${domainName.trim()}", registryChainId: "${registryChainId}") }`,
+      });
+
+      if (result.errors?.length) {
+        throw new Error(result.errors[0].message);
+      }
+
+      if (result.data?.checkOwnership) {
+        setIsPending(true);
+        
+        // Step 2: Poll for the response
+        // The cross-chain message needs time to propagate
+        let attempts = 0;
+        const maxAttempts = 15;
+        const pollInterval = 2000; // 2 seconds
+
+        const pollForResult = async (): Promise<DomainCheckerQueryResult | null> => {
+          attempts++;
+          console.log(`Polling for cross-chain response (attempt ${attempts}/${maxAttempts})...`);
+
+          // First check if still pending
+          const stillPending = await checkPendingQuery(domainName.trim());
+          
+          if (!stillPending) {
+            // Query completed, fetch the result
+            const queryRes = await fetchQueryResult(domainName.trim());
+            if (queryRes) {
+              return queryRes;
+            }
+          }
+
+          if (attempts < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, pollInterval));
+            return pollForResult();
+          }
+
+          return null;
+        };
+
+        // Start polling after initial delay
+        setTimeout(async () => {
+          const finalResult = await pollForResult();
+          setIsPending(false);
+          
+          if (finalResult) {
+            setQueryResult(finalResult);
+            fetchCachedQueries(); // Refresh cached queries list
+          } else {
+            setError("Cross-chain query timed out. The response may still arrive - check cached queries.");
+          }
+        }, 1000);
+      }
+    } catch (err) {
+      console.error("Failed to check ownership:", err);
+      setError(err instanceof Error ? err.message : "Failed to check ownership");
+      setIsPending(false);
+    } finally {
+      setIsQuerying(false);
+    }
+  }
+
+  function formatTimestamp(micros: number): string {
+    const date = new Date(micros / 1000); // Convert microseconds to milliseconds
+    return date.toLocaleString();
+  }
+
+  if (!mounted) return null;
+
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+      <h2 className="mb-4 text-xl font-bold text-zinc-900 dark:text-white">
+        Cross-Chain Domain Query Test
+      </h2>
+      
+      <p className="mb-4 text-sm text-zinc-600 dark:text-zinc-400">
+        This component tests the Request-Response pattern for cross-chain state queries.
+        It uses the <code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">domain_checker</code> contract
+        to query domain ownership from the LNS registry on another chain.
+      </p>
+
+      {error && (
+        <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400">
+          {error}
+        </div>
+      )}
+
+      {/* Chain Info */}
+      <div className="mb-4 space-y-1 text-sm">
+        <p className="text-zinc-600 dark:text-zinc-400">
+          <span className="font-medium">Current Chain:</span>{" "}
+          <code className="rounded bg-zinc-100 px-1 font-mono text-xs dark:bg-zinc-800">
+            {currentChainId ? `${currentChainId.slice(0, 12)}...` : "Not connected"}
+          </code>
+        </p>
+        <p className="text-zinc-600 dark:text-zinc-400">
+          <span className="font-medium">Registry Chain:</span>{" "}
+          <code className="rounded bg-zinc-100 px-1 font-mono text-xs dark:bg-zinc-800">
+            {registryChainId ? `${registryChainId.slice(0, 12)}...` : "Not set"}
+          </code>
+        </p>
+        <p className="text-zinc-600 dark:text-zinc-400">
+          <span className="font-medium">Domain Checker App:</span>{" "}
+          <code className="rounded bg-zinc-100 px-1 font-mono text-xs dark:bg-zinc-800">
+            {domainCheckerAppId ? `${domainCheckerAppId.slice(0, 12)}...` : "Not set"}
+          </code>
+        </p>
+      </div>
+
+      {/* Query Form */}
+      <div className="mb-6">
+        <label className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          Domain Name to Query
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={domainName}
+            onChange={(e) => setDomainName(e.target.value)}
+            placeholder="example"
+            className="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-2 text-zinc-900 placeholder-zinc-400 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-zinc-600 dark:bg-zinc-800 dark:text-white dark:placeholder-zinc-500"
+            disabled={isQuerying || isPending}
+          />
+          <span className="flex items-center text-zinc-500 dark:text-zinc-400">.linera</span>
+          <button
+            type="button"
+            onClick={handleCheckOwnership}
+            disabled={isQuerying || isPending || !domainName.trim() || !registryChainId}
+            className="rounded-lg bg-sky-600 px-4 py-2 font-medium text-white transition-colors hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isQuerying ? "Sending..." : isPending ? "Waiting..." : "Query via Contract"}
+          </button>
+        </div>
+        {isPending && (
+          <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">
+            Waiting for cross-chain response... This may take 10-30 seconds.
+          </p>
+        )}
+      </div>
+
+      {/* Query Result */}
+      {queryResult && (
+        <div className="mb-6 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-800 dark:bg-green-900/20">
+          <h3 className="mb-2 font-semibold text-green-800 dark:text-green-300">
+            Query Result (from contract state)
+          </h3>
+          <div className="space-y-1 text-sm">
+            <p className="text-green-700 dark:text-green-400">
+              <span className="font-medium">Domain:</span> {queryResult.name}.linera
+            </p>
+            <p className="text-green-700 dark:text-green-400">
+              <span className="font-medium">Available:</span> {queryResult.isAvailable ? "Yes" : "No"}
+            </p>
+            <p className="text-green-700 dark:text-green-400">
+              <span className="font-medium">Owner:</span>{" "}
+              {queryResult.owner || "None (not registered)"}
+            </p>
+            {queryResult.expiration && (
+              <p className="text-green-700 dark:text-green-400">
+                <span className="font-medium">Expiration:</span>{" "}
+                {formatTimestamp(queryResult.expiration)}
+              </p>
+            )}
+            <p className="text-green-700 dark:text-green-400">
+              <span className="font-medium">Query Time:</span>{" "}
+              {formatTimestamp(queryResult.queryTimestamp)}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Cached Queries */}
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">
+            Cached Query Results
+          </h3>
+          <button
+            type="button"
+            onClick={fetchCachedQueries}
+            className="rounded bg-zinc-200 px-2 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-600"
+          >
+            Refresh
+          </button>
+        </div>
+        
+        {cachedQueries.length === 0 ? (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            No cached queries yet. Query a domain to see results stored in the contract.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {cachedQueries.map((query) => (
+              <div
+                key={query.name}
+                className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-zinc-800 dark:text-zinc-200">
+                    {query.name}.linera
+                  </span>
+                  <span
+                    className={`rounded px-2 py-0.5 text-xs font-medium ${
+                      query.isAvailable
+                        ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                        : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                    }`}
+                  >
+                    {query.isAvailable ? "Available" : "Taken"}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  Owner: {query.owner || "None"} | Queried: {formatTimestamp(query.queryTimestamp)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* How it works */}
+      <div className="mt-6 rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800">
+        <h3 className="mb-2 font-semibold text-zinc-800 dark:text-zinc-200">
+          How Cross-Chain Query Works
+        </h3>
+        <ol className="list-inside list-decimal space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
+          <li>User calls <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-700">checkOwnership</code> on domain_checker contract</li>
+          <li>Contract sends <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-700">RequestCheckOwnership</code> message to LNS registry chain</li>
+          <li>LNS registry processes the request and sends <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-700">OwnershipResponse</code> back</li>
+          <li>domain_checker receives the response and stores it in state</li>
+          <li>UI polls the contract state to retrieve the result</li>
+        </ol>
+        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-500">
+          Note: Cross-chain messages are asynchronous and may take several seconds to propagate.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+```
+
+
+**Tool Call: src/components/domain-checker-app.tsx**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/src/components/domain-checker-app.tsx
+```
+      {/* Query Form */}
+      <div className="mb-6">
+        <label htmlFor="domain-checker-input" className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          Domain Name to Query
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="domain-checker-input"
+            type="text"
+            value={domainName}
+            onChange={(e) => setDomainName(e.target.value)}
+            placeholder="example"
+            className="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-2 text-zinc-900 placeholder-zinc-400 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-zinc-600 dark:bg-zinc-800 dark:text-white dark:placeholder-zinc-500"
+            disabled={isQuerying || isPending}
+          />
+```
+
+
+**Tool Call: 1 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Build contracts to verify compilation",
+    "id": "7",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "8",
+    "priority": "medium",
+    "status": "completed"
+  },
+  {
+    "content": "Update README with domain_checker documentation",
+    "id": "9",
+    "priority": "low",
+    "status": "in_progress"
+  }
+]
+
+**Tool Call: contracts/README.md**
+Status: Completed
+
+<file>
+00001| # Linera Smart Contracts
+00002| 
+00003| This folder contains Linera smart contracts for the LNS project. Each contract is organized as a separate subfolder following the standard Linera project structure.
+00004| 
+00005| ## Structure
+00006| 
+00007| ```
+00008| contracts/
+00009| ├── README.md
+00010| ├── linera_name_system/     # Domain registration contract
+00011| │   ├── Cargo.toml
+00012| │   ├── rust-toolchain.toml
+00013| │   └── src/
+00014| │       ├── lib.rs          # ABI definitions
+00015| │       ├── state.rs        # Application state
+00016| │       ├── contract.rs     # Contract logic (mutations)
+00017| │       └── service.rs      # Service logic (queries)
+00018| └── <future_contract>/      # Add more contracts here
+00019| ```
+00020| 
+00021| ## Creating a New Contract
+00022| 
+00023| Use the Linera CLI to scaffold a new contract:
+00024| 
+00025| ```bash
+00026| cd contracts
+00027| linera project new my_new_contract
+00028| ```
+00029| 
+00030| This creates the standard structure with all necessary files.
+00031| 
+00032| ## Building Contracts
+00033| 
+00034| Build a specific contract:
+00035| 
+00036| ```bash
+00037| cd contracts/linera_name_system
+00038| cargo build --release --target wasm32-unknown-unknown
+00039| ```
+00040| 
+00041| The compiled WASM files will be in:
+00042| - `target/wasm32-unknown-unknown/release/linera_name_system_contract.wasm`
+00043| - `target/wasm32-unknown-unknown/release/linera_name_system_service.wasm`
+00044| 
+00045| ## Deploying Contracts
+00046| 
+00047| Deploy using the Linera CLI:
+00048| 
+00049| ```bash
+00050| linera project publish-and-create contracts/linera_name_system --json-argument "null"
+00051| ```
+00052| 
+00053| Save the returned Application ID for frontend integration.
+00054| 
+00055| ## Current Contracts
+00056| 
+00057| ### linera_name_system
+00058| 
+00059| Domain registration system for .linera domains with expiration, marketplace, and DNS-like value storage.
+00060| 
+00061| **Operations:**
+00062| - `Register { name }` - Register a new domain (1 year expiration)
+00063| - `Transfer { name, new_owner }` - Transfer domain ownership
+00064| - `Extend { name, years }` - Extend domain registration by years (1-10)
+00065| - `SetPrice { name, price }` - Set domain price for sale (0 to remove from sale)
+00066| - `Buy { name }` - Buy a domain that is for sale
+00067| - `SetValue { name, value }` - Set DNS-like value for a domain
+00068| 
+00069| **Queries:**
+00070| - `owner(name)` - Look up domain owner
+00071| - `isAvailable(name)` - Check if domain is available (not registered or expired)
+00072| - `domain(name)` - Get full domain information
+00073| - `resolve(name)` - Resolve domain to its value (DNS-like lookup)
+00074| - `registryChainId()` - Get registry chain ID
+00075| - `isRegistryChain()` - Check if current chain is registry
+00076| - `currentChainId()` - Get current chain ID
+00077| - `allDomains()` - List all registered domains
+00078| - `domainsForSale()` - List domains that are for sale
+00079| - `domainsByOwner(owner)` - List domains owned by address
+00080| 
+00081| **Mutations:**
+00082| - `register(name)` - Schedule domain registration
+00083| - `transfer(name, newOwner)` - Schedule ownership transfer
+00084| - `extend(name, years)` - Extend domain registration
+00085| - `setPrice(name, price)` - Set domain price for sale
+00086| - `buy(name)` - Buy a domain
+00087| - `setValue(name, value)` - Set DNS-like value
+00088| 
+00089| **Features:**
+00090| - **Expiration**: Domains expire after 1 year (can be extended)
+00091| - **Marketplace**: Domains can be bought/sold by setting price
+00092| - **DNS-like Values**: Domains can store arbitrary text (URL, IP, etc.)
+00093| - **Expired Domains**: Can be re-registered if expired
+00094| 
+
+(End of file - total 94 lines)
+</file>
+
+**Tool Call: contracts/README.md**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/README.md
+```
+## Structure
+
+```
+contracts/
+├── README.md
+├── linera_name_system/     # Domain registration contract
+│   ├── Cargo.toml
+│   ├── rust-toolchain.toml
+│   └── src/
+│       ├── lib.rs          # ABI definitions
+│       ├── state.rs        # Application state
+│       ├── contract.rs     # Contract logic (mutations)
+│       └── service.rs      # Service logic (queries)
+├── domain_checker/         # Cross-chain domain query test contract
+│   ├── Cargo.toml
+│   ├── rust-toolchain.toml
+│   └── src/
+│       ├── lib.rs          # ABI definitions
+│       ├── state.rs        # Application state
+│       ├── contract.rs     # Contract logic (mutations)
+│       └── service.rs      # Service logic (queries)
+└── <future_contract>/      # Add more contracts here
+```
+```
+
+
+**Tool Call: contracts/README.md**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/README.md
+```
+**Features:**
+- **Expiration**: Domains expire after 1 year (can be extended)
+- **Marketplace**: Domains can be bought/sold by setting price
+- **DNS-like Values**: Domains can store arbitrary text (URL, IP, etc.)
+- **Expired Domains**: Can be re-registered if expired
+
+### domain_checker
+
+Test contract demonstrating cross-chain state queries using the Request-Response pattern. This contract queries domain ownership information from the LNS registry on another chain.
+
+**Purpose:**
+This contract tests whether smart contracts can query state from another chain. Since Linera uses per-chain state isolation, cross-chain queries must be asynchronous via message passing.
+
+**How it works:**
+1. User calls `CheckOwnership` operation on domain_checker contract
+2. Contract sends `RequestCheckOwnership` message to LNS registry chain
+3. LNS registry processes the request and sends `OwnershipResponse` back
+4. domain_checker receives the response and stores it in local state
+5. UI polls the contract state to retrieve the cached result
+
+**Operations:**
+- `CheckOwnership { name, registry_chain_id }` - Query domain ownership from LNS registry
+
+**Messages:**
+- `RequestCheckOwnership { name, requester_chain }` - Sent to LNS registry
+- `OwnershipResponse { name, owner, is_available, expiration }` - Response from LNS registry
+
+**Queries:**
+- `domainQuery(name)` - Get cached query result for a domain
+- `isQueryPending(name)` - Check if a query is waiting for response
+- `pendingQueryTimestamp(name)` - Get timestamp when query was initiated
+- `allCachedQueries()` - List all cached domain query results
+- `currentChainId()` - Get current chain ID
+
+**Building:**
+```bash
+cd contracts/domain_checker
+cargo build --release --target wasm32-unknown-unknown
+```
+
+**Deploying:**
+```bash
+linera project publish-and-create contracts/domain_checker --json-argument "null"
+```
+
+**Note:** This contract requires the LNS registry to be deployed first, as it sends messages to the registry chain.
+
+```
+
+
+**Tool Call: 0 todos**
+Status: Completed
+
+[
+  {
+    "content": "Create new contract using linera project new domain_checker",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement lib.rs with ABI definitions for cross-chain query",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement state.rs to store query results",
+    "id": "3",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement contract.rs with message handling logic",
+    "id": "4",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Implement service.rs with GraphQL queries",
+    "id": "5",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Update linera_name_system to handle CheckOwnership messages",
+    "id": "6",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Build contracts to verify compilation",
+    "id": "7",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Create frontend component to test the cross-chain query",
+    "id": "8",
+    "priority": "medium",
+    "status": "completed"
+  },
+  {
+    "content": "Update README with domain_checker documentation",
+    "id": "9",
+    "priority": "low",
+    "status": "completed"
+  }
+]
+
+## Assistant
+
+Let me verify everything compiles correctly and provide a summary of what was created.
+
+**Tool Call: Final build verification for domain_checker**
+Status: Completed
+
+warning: unused variable: `name`
+  --> src/contract.rs:68:46
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                              ^^^^ help: try ignoring the field: `name: _`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `requester_chain`
+  --> src/contract.rs:68:52
+   |
+68 |             Message::RequestCheckOwnership { name, requester_chain } => {
+   |                                                    ^^^^^^^^^^^^^^^ help: try ignoring the field: `requester_chain: _`
+
+warning: unused import: `DomainQueryResult`
+  --> src/service.rs:15:22
+   |
+15 | use domain_checker::{DomainQueryResult, Operation};
+   |                      ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: `domain_checker` (bin "domain_checker_contract") generated 2 warnings
+warning: `domain_checker` (bin "domain_checker_service") generated 1 warning (run `cargo fix --bin "domain_checker_service"` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.26s
+
+
+**Tool Call: Final build verification for linera_name_system**
+Status: Completed
+
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.25s
+
+
+## Assistant
+
+Let me fix the warnings in the domain_checker contract and provide a summary.
+
+**Tool Call: contracts/domain_checker/src/contract.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/contract.rs
+```
+            Message::RequestCheckOwnership { name: _, requester_chain: _ } => {
+                // This message should be handled by the LNS registry, not this contract
+                // But we include it here for completeness - in practice, this contract
+                // only sends RequestCheckOwnership, it doesn't receive it
+                panic!("DomainChecker should not receive RequestCheckOwnership messages");
+            }
+```
+
+
+**Tool Call: contracts/domain_checker/src/service.rs**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker/src/service.rs
+```
+use domain_checker::Operation;
+```
+
+
+**Tool Call: Final build verification for domain_checker**
+Status: Completed
+
+   Compiling domain_checker v0.1.0 (/home/uratmangun/CascadeProjects/linera-name-system-worktree/contracts/domain_checker)
+    Finished `release` profile [optimized + debuginfo] target(s) in 21.96s
+
+
+## Assistant
+
+Both contracts compile successfully. Here's a summary of what was created:
+
+## Summary
+
+### New Contract: `domain_checker`
+
+Created a test contract to demonstrate cross-chain domain queries using the Request-Response pattern.
+
+**Files created/modified:**
+
+| File | Description |
+|------|-------------|
+| `contracts/domain_checker/src/lib.rs` | ABI definitions with `Operation`, `Message`, and `DomainQueryResult` types |
+| `contracts/domain_checker/src/state.rs` | State with `domain_queries` and `pending_queries` maps |
+| `contracts/domain_checker/src/contract.rs` | Contract logic handling `CheckOwnership` operation and `OwnershipResponse` message |
+| `contracts/domain_checker/src/service.rs` | GraphQL queries for cached results |
+| `contracts/domain_checker/Cargo.toml` | Updated dependencies to match linera_name_system |
+| `contracts/linera_name_system/src/lib.rs` | Added `RequestCheckOwnership` and `OwnershipResponse` messages |
+| `contracts/linera_name_system/src/contract.rs` | Added handler for `RequestCheckOwnership` message |
+| `contracts/README.md` | Updated with domain_checker documentation |
+| `src/components/domain-checker-app.tsx` | Frontend component to test cross-chain queries |
+
+### How the Cross-Chain Query Works
+
+```
+┌─────────────────────┐                    ┌─────────────────────┐
+│   domain_checker    │                    │  linera_name_system │
+│   (Chain A)         │                    │  (Registry Chain)   │
+└─────────────────────┘                    └─────────────────────┘
+         │                                          │
+         │  1. CheckOwnership operation             │
+         │─────────────────────────────────────────>│
+         │     (RequestCheckOwnership message)      │
+         │                                          │
+         │                                          │ 2. Look up domain
+         │                                          │    in local state
+         │                                          │
+         │  3. OwnershipResponse message            │
+         │<─────────────────────────────────────────│
+         │                                          │
+         │  4. Store result in state                │
+         │                                          │
+```
+
+### To Deploy and Test
+
+1. **Build the contracts:**
+   ```bash
+   cd contracts/domain_checker
+   cargo build --release --target wasm32-unknown-unknown
+   ```
+
+2. **Deploy domain_checker:**
+   ```bash
+   linera project publish-and-create contracts/domain_checker --json-argument "null"
+   ```
+
+3. **Use the frontend component** by importing it and passing the required props:
+   ```tsx
+   import DomainCheckerApp from "@/components/domain-checker-app";
+   
+   <DomainCheckerApp 
+     domainCheckerAppId="<your-domain-checker-app-id>"
+     registryChainId="<lns-registry-chain-id>"
+   />
+   ```
+
+This demonstrates that cross-chain state queries in Linera are **asynchronous** - you cannot synchronously read another chain's state from within a contract. Instead, you must use the message-passing pattern shown here.
+
+## User
+
+[@app](file:///home/uratmangun/CascadeProjects/linera-name-system-worktree/src/app)
+ please create a new page to use the `DomainCheckerApp` component and also deploy the `   linera project publish-and-create contracts/domain_checker --json-argument "null"
+   `
+
+**Tool Call: Deploy domain_checker contract**
+Status: Completed
+
+2026-01-04T13:20:16.754464Z  INFO linera::options: Using default wallet directory /home/uratmangun/.config/linera
+2026-01-04T13:20:16.937646Z  INFO linera::options: Using default wallet directory /home/uratmangun/.config/linera
+2026-01-04T13:20:16.938557Z  INFO linera::options: Using default wallet directory /home/uratmangun/.config/linera
+2026-01-04T13:20:16.939619Z  INFO linera: Creating application on chain 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.26s
+2026-01-04T13:20:17.283442Z  INFO linera_client::client_context: Loading bytecode files
+2026-01-04T13:20:17.285000Z  INFO linera_client::client_context: Publishing module
+2026-01-04T13:20:18.081177Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="165f2f8a" height=65}:handle_request{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc}:process_confirmed_block{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=65 block_hash=b3b2d9ce44988dbcdd9cc6d881a013eeae872721ea6334f9f5861f436bb48f79}: linera_core::chain_worker::state: Certificate written to storage chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=65 hash=b3b2d9ce44988dbcdd9cc6d881a013eeae872721ea6334f9f5861f436bb48f79
+2026-01-04T13:20:18.131205Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="165f2f8a" height=66}:handle_request{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc}:process_confirmed_block{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=66 block_hash=b09a0c6d37c90a1eeabd21dbe2905be5e0d72bd7a4478528d1cff1f1a78ac399}: linera_core::chain_worker::state: Certificate written to storage chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=66 hash=b09a0c6d37c90a1eeabd21dbe2905be5e0d72bd7a4478528d1cff1f1a78ac399
+2026-01-04T13:20:18.137416Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="165f2f8a" height=67}:handle_request{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc}:process_confirmed_block{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=67 block_hash=a830dae044747576025f5134f10f720f5388b12e78ff9ebb4916a92835eafe1e}: linera_core::chain_worker::state: Certificate written to storage chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=67 hash=a830dae044747576025f5134f10f720f5388b12e78ff9ebb4916a92835eafe1e
+2026-01-04T13:20:18.142750Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="165f2f8a" height=68}:handle_request{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc}:process_confirmed_block{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=68 block_hash=0daa3dcf31060645a59d905b821c338b5d2bbaff0b91d1a0cfd8de0dc8f2677f}: linera_core::chain_worker::state: Certificate written to storage chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=68 hash=0daa3dcf31060645a59d905b821c338b5d2bbaff0b91d1a0cfd8de0dc8f2677f
+2026-01-04T13:20:18.149830Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="165f2f8a" height=69}:handle_request{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc}:process_confirmed_block{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=69 block_hash=7e7b52d4d62775d7f6e0c3c8b76bff30c975fefd4f323595af7a1cfe5e26c2f1}: linera_core::chain_worker::state: Certificate written to storage chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=69 hash=7e7b52d4d62775d7f6e0c3c8b76bff30c975fefd4f323595af7a1cfe5e26c2f1
+2026-01-04T13:20:18.404295Z  WARN handle_block_proposal{address="https://linera-testnet-validator.contributiondao.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.555769Z  WARN handle_block_proposal{address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:18.566010Z  WARN handle_block_proposal{address="https://linera-testnet.rubynodes.io:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.566107Z  WARN handle_block_proposal{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 28 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 29 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:18.566165Z  WARN handle_block_proposal{address="https://testnet-linera.lavenderfive.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.567365Z  WARN handle_block_proposal{address="https://swyke-linera-test-00.restake.cloud:443"}: grpc_client: error=Chain is expecting a next block at height 14 but the given block is at height 70 instead
+2026-01-04T13:20:18.567406Z  WARN handle_block_proposal{address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:18.567431Z  WARN handle_block_proposal{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.574509Z  WARN handle_block_proposal{address="https://tn.linera.stakingcabin.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.583088Z  WARN handle_block_proposal{address="https://linera-testnet.brightlystake.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.589898Z  WARN handle_block_proposal{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.595908Z  WARN handle_block_proposal{address="https://linera.unitynodes.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.601303Z  WARN handle_block_proposal{address="https://linera.banansen.dev:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.602976Z  WARN handle_block_proposal{address="https://linera.pops.one:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.630300Z  WARN handle_block_proposal{address="https://validator-4.testnet-conway.linera.net:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.631538Z  WARN handle_block_proposal{address="https://validator-2.testnet-conway.linera.net:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.636754Z  WARN handle_block_proposal{address="https://validator-3.testnet-conway.linera.net:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.642347Z  WARN handle_block_proposal{address="https://validator-1.testnet-conway.linera.net:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.748520Z  WARN handle_block_proposal{address="https://linera.everstake.one:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:18.767167Z  WARN handle_block_proposal{address="https://linera-testnet.senseinode.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:18.834940Z  WARN handle_block_proposal{address="https://linera-conway.tecnodes.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:19.018991Z  WARN handle_confirmed_certificate{address="https://swyke-linera-test-00.restake.cloud:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: a22c4b0dcb511fe9cf05692ead349bb48266bc849e65ebd6cb7d51aa600528ad }, BlobId { blob_type: ServiceBytecode, hash: 7258ac1942b12682effca1a3cc7695bb87117d591d0a53968af7d5372786cf58 }]
+2026-01-04T13:20:19.135399Z  WARN handle_pending_blob{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc blob=BlobContent { blob_type: ContractBytecode } address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Worker error: Blob was not required by any pending block
+2026-01-04T13:20:19.198560Z  WARN handle_pending_blob{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc blob=BlobContent { blob_type: ContractBytecode } address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Worker error: Blob was not required by any pending block
+2026-01-04T13:20:19.642198Z  WARN handle_block_proposal{address="https://linera-test.artifact.systems:443"}: grpc_client: error=Chain is expecting a next block at height 18 but the given block is at height 70 instead
+2026-01-04T13:20:19.812093Z  WARN handle_block_proposal{address="https://15.204.31.226.sslip.io:443"}: grpc_client: error=Chain is expecting a next block at height 14 but the given block is at height 70 instead
+2026-01-04T13:20:20.039647Z  WARN handle_block_proposal{address="https://linera-testnet.runtime-client-rpc.com:443"}: grpc_client: error=Chain is expecting a next block at height 14 but the given block is at height 70 instead
+2026-01-04T13:20:20.658354Z  WARN handle_validated_certificate{address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:20.658396Z  INFO linera_core::remote_node: validator requested blob but it is not required address="https://linera-testnet.chainbase.online:443" blob_id=ChainDescription:165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc
+2026-01-04T13:20:20.660960Z  WARN handle_validated_certificate{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 28 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 29 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:20.663757Z  WARN handle_validated_certificate{address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:20.663788Z  INFO linera_core::remote_node: validator requested blob but it is not required address="https://linera-testnet.talentum.id:443" blob_id=ChainDescription:165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc
+2026-01-04T13:20:20.665920Z  WARN handle_validated_certificate{address="https://swyke-linera-test-00.restake.cloud:443"}: grpc_client: error=Chain is expecting a next block at height 16 but the given block is at height 70 instead
+2026-01-04T13:20:20.822211Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="165f2f8a" height=70}:handle_request{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc}:process_confirmed_block{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=70 block_hash=bf9bf1218b4eb59701aedd71df22e9e55cdecbd681cc638f6cb49a59378f37a1}: linera_core::chain_worker::state: Certificate written to storage chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=70 hash=bf9bf1218b4eb59701aedd71df22e9e55cdecbd681cc638f6cb49a59378f37a1
+2026-01-04T13:20:21.012032Z  WARN handle_confirmed_certificate{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:21.013867Z  WARN handle_confirmed_certificate{address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:21.025347Z  WARN handle_confirmed_certificate{address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:21.026424Z  WARN handle_confirmed_certificate{address="https://swyke-linera-test-00.restake.cloud:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ContractBytecode, hash: 22e24d58140694991f0325686edbea90e446302fa5caa952b729cc1682d9cfec }, BlobId { blob_type: ServiceBytecode, hash: 055e7a9ef0c5b3502db04e74abd533583426b88423788f93567ba40daf1381c7 }]
+2026-01-04T13:20:21.152154Z  INFO linera_client::client_context: Module published successfully!
+2026-01-04T13:20:21.152173Z  INFO linera_client::client_context: Synchronizing client and processing inbox
+2026-01-04T13:20:21.339652Z  WARN handle_chain_info_query{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 28 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 29 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:21.983110Z  WARN handle_chain_info_query{address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:21.985985Z  WARN handle_chain_info_query{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 28 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 29 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:21.987453Z  WARN handle_chain_info_query{address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:23.545418Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="72a15893" height=10}:handle_request{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:process_confirmed_block{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=10 block_hash=d526c9df80d380e9f5e8df9819cc11aa6f10c6117fd1c4b2490983205079cfb1}: linera_core::chain_worker::state: Certificate written to storage chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=10 hash=d526c9df80d380e9f5e8df9819cc11aa6f10c6117fd1c4b2490983205079cfb1
+2026-01-04T13:20:23.571396Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="72a15893" height=11}:handle_request{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:process_confirmed_block{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=11 block_hash=19621df00898882bf5560cc0052e1faea5db5b61f1ecd50b2dd0d01c0f53e0eb}: linera_core::chain_worker::state: Certificate written to storage chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=11 hash=19621df00898882bf5560cc0052e1faea5db5b61f1ecd50b2dd0d01c0f53e0eb
+2026-01-04T13:20:23.582065Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="72a15893" height=12}:handle_request{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:process_confirmed_block{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=12 block_hash=4fdb3442ee243807a5bcba079863217a79cc28f80443a5a08f40574489ba37ec}: linera_core::chain_worker::state: Certificate written to storage chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=12 hash=4fdb3442ee243807a5bcba079863217a79cc28f80443a5a08f40574489ba37ec
+2026-01-04T13:20:23.592596Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="72a15893" height=13}:handle_request{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:process_confirmed_block{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=13 block_hash=457cbadd56713f3e905b62e0f95f10990f4a65264f37efa9a7b850841976d8ca}: linera_core::chain_worker::state: Certificate written to storage chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=13 hash=457cbadd56713f3e905b62e0f95f10990f4a65264f37efa9a7b850841976d8ca
+2026-01-04T13:20:23.601775Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="72a15893" height=14}:handle_request{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:process_confirmed_block{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=14 block_hash=4ecddd34f9f8ef4ff35e5c20877a697c2a69e1a88b9dcf24fd4dedc78a1deebc}: linera_core::chain_worker::state: Certificate written to storage chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 height=14 hash=4ecddd34f9f8ef4ff35e5c20877a697c2a69e1a88b9dcf24fd4dedc78a1deebc
+2026-01-04T13:20:23.603764Z  INFO linera_core::client: find_received_certificates finished
+2026-01-04T13:20:23.793029Z  WARN handle_chain_info_query{address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:23.795791Z  WARN handle_chain_info_query{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 28 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 29 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:23.796038Z  WARN handle_chain_info_query{address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:24.148158Z  WARN handle_block_proposal{address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:24.151061Z  WARN handle_block_proposal{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 28 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 29 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:24.151989Z  WARN handle_block_proposal{address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:24.154124Z  WARN handle_block_proposal{address="https://swyke-linera-test-00.restake.cloud:443"}: grpc_client: error=Chain is expecting a next block at height 16 but the given block is at height 71 instead
+2026-01-04T13:20:24.495234Z  WARN handle_validated_certificate{address="https://linera-testnet.chainbase.online:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:24.495276Z  INFO linera_core::remote_node: validator requested blob but it is not required address="https://linera-testnet.chainbase.online:443" blob_id=ChainDescription:165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc
+2026-01-04T13:20:24.497715Z  WARN handle_validated_certificate{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 28 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 29 }, EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:24.498642Z  WARN handle_validated_certificate{address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]
+2026-01-04T13:20:24.498667Z  INFO linera_core::remote_node: validator requested blob but it is not required address="https://linera-testnet.talentum.id:443" blob_id=ChainDescription:165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc
+2026-01-04T13:20:24.500208Z  WARN handle_validated_certificate{address="https://swyke-linera-test-00.restake.cloud:443"}: grpc_client: error=Chain is expecting a next block at height 16 but the given block is at height 71 instead
+2026-01-04T13:20:24.633147Z  INFO handle_confirmed_certificate{nick="Client node for 165f2f8a and 1 others" chain_id="165f2f8a" height=71}:handle_request{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc}:process_confirmed_block{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=71 block_hash=bc781ff9d38a4ce37bea9a744a91b5340fd502c92112875a0094ac124e54d20f}: linera_core::chain_worker::state: Certificate written to storage chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc height=71 hash=bc781ff9d38a4ce37bea9a744a91b5340fd502c92112875a0094ac124e54d20f
+2026-01-04T13:20:24.829470Z  WARN handle_confirmed_certificate{address="https://linera.blockscope.net:443"}: grpc_client: error=Events not found: [EventId { chain_id: 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7, stream_id: StreamId { application_id: System, stream_name: StreamName(00) }, index: 30 }]
+2026-01-04T13:20:24.957120Z  INFO linera: Application published successfully!
+2026-01-04T13:20:24.957145Z  INFO linera: Project published and created in 8017 ms
+d290e51ebcb758ae7fdd083407f8744aacd0a80dbf71f66a168fa7bcec21356e
+2026-01-04T13:20:24.957330Z  INFO linera: Project published and created in 8202 ms
+
+
+**Tool Call: 2 todos**
+Status: Completed
+
+[
+  {
+    "content": "Deploy domain_checker contract using linera CLI",
+    "id": "1",
+    "priority": "high",
+    "status": "in_progress"
+  },
+  {
+    "content": "Create new page for DomainCheckerApp component",
+    "id": "2",
+    "priority": "high",
+    "status": "pending"
+  }
+]
+
+## Assistant
+
+The contract was deployed successfully. The application ID is:
+`d290e51ebcb758ae7fdd083407f8744aacd0a80dbf71f66a168fa7bcec21356e`
+
+Now let me create the page and update the todos.
+
+**Tool Call: 1 todos**
+Status: Completed
+
+[
+  {
+    "content": "Deploy domain_checker contract using linera CLI",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Create new page for DomainCheckerApp component",
+    "id": "2",
+    "priority": "high",
+    "status": "in_progress"
+  }
+]
+
+**Tool Call: src/app/debug/page.tsx**
+Status: Completed
+
+<file>
+00001| "use client";
+00002| 
+00003| import dynamic from "next/dynamic";
+00004| 
+00005| const CounterApp = dynamic(() => import("@/components/counter-app"), {
+00006|   ssr: false,
+00007|   loading: () => (
+00008|     <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+00009|       <div className="text-zinc-500 dark:text-zinc-400">Loading...</div>
+00010|     </div>
+00011|   ),
+00012| });
+00013| 
+00014| export default function Home() {
+00015|   return <CounterApp />;
+00016| }
+00017| 
+
+(End of file - total 17 lines)
+</file>
+
+**Tool Call: Create domain-checker page directory**
+Status: Completed
+
+
+
+**Tool Call: src/app/domain-checker/page.tsx**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/src/app/domain-checker/page.tsx
+```
+"use client";
+
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useDynamicContext, useIsLoggedIn } from "@dynamic-labs/sdk-react-core";
+import { DynamicWidget } from "@dynamic-labs/sdk-react-core";
+import { lineraAdapter, type LineraProvider } from "@/lib/linera-adapter";
+
+const DomainCheckerApp = dynamic(
+  () => import("@/components/domain-checker-app"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex items-center justify-center p-8">
+        <div className="text-zinc-500 dark:text-zinc-400">
+          Loading Domain Checker...
+        </div>
+      </div>
+    ),
+  }
+);
+
+// Hardcoded application IDs
+const DOMAIN_CHECKER_APP_ID =
+  "d290e51ebcb758ae7fdd083407f8744aacd0a80dbf71f66a168fa7bcec21356e";
+const LNS_APPLICATION_ID = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
+
+export default function DomainCheckerPage() {
+  const { primaryWallet } = useDynamicContext();
+  const isLoggedIn = useIsLoggedIn();
+  const [mounted, setMounted] = useState(false);
+  const [chainConnected, setChainConnected] = useState(false);
+  const [appConnected, setAppConnected] = useState(false);
+  const [isAutoConnecting, setIsAutoConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [registryChainId, setRegistryChainId] = useState<string | null>(null);
+  const providerRef = useRef<LineraProvider | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+    setChainConnected(lineraAdapter.isChainConnected());
+    setAppConnected(lineraAdapter.isApplicationSet());
+  }, []);
+
+  // Auto-connect to Linera when wallet is connected
+  const autoConnect = useCallback(async () => {
+    if (!primaryWallet || !DOMAIN_CHECKER_APP_ID || isAutoConnecting) return;
+    if (chainConnected && appConnected) return;
+
+    setIsAutoConnecting(true);
+    setError(null);
+
+    try {
+      // Connect to Linera chain
+      if (!chainConnected) {
+        const provider = await lineraAdapter.connect(primaryWallet);
+        providerRef.current = provider;
+        setChainConnected(true);
+      }
+
+      // Connect to domain_checker application
+      if (!appConnected && DOMAIN_CHECKER_APP_ID) {
+        await lineraAdapter.setApplication(DOMAIN_CHECKER_APP_ID);
+        setAppConnected(true);
+      }
+    } catch (err) {
+      console.error("Auto-connect failed:", err);
+      setError(
+        err instanceof Error ? err.message : "Failed to auto-connect to Linera"
+      );
+    } finally {
+      setIsAutoConnecting(false);
+    }
+  }, [primaryWallet, chainConnected, appConnected, isAutoConnecting]);
+
+  useEffect(() => {
+    if (mounted && isLoggedIn && primaryWallet && !chainConnected) {
+      autoConnect();
+    }
+  }, [mounted, isLoggedIn, primaryWallet, chainConnected, autoConnect]);
+
+  // Fetch registry chain ID from LNS application
+  const fetchRegistryChainId = useCallback(async () => {
+    if (!LNS_APPLICATION_ID) return;
+
+    try {
+      // Query the LNS application for registry chain ID
+      const result = await lineraAdapter.queryApplicationOnChain<{
+        data?: { registryChainId: string };
+        errors?: Array<{ message: string }>;
+      }>(
+        // We need to query any chain that has the LNS app - use the creator chain from app ID
+        LNS_APPLICATION_ID.slice(0, 64), // Extract chain ID from application ID
+        LNS_APPLICATION_ID,
+        `query { registryChainId }`
+      );
+
+      if (result.data?.registryChainId) {
+        setRegistryChainId(result.data.registryChainId);
+      }
+    } catch (err) {
+      console.error("Failed to fetch registry chain ID:", err);
+      // Fallback: extract from LNS application ID (first 64 chars is the chain ID)
+      if (LNS_APPLICATION_ID.length >= 64) {
+        setRegistryChainId(LNS_APPLICATION_ID.slice(0, 64));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (appConnected && LNS_APPLICATION_ID) {
+      fetchRegistryChainId();
+    }
+  }, [appConnected, fetchRegistryChainId]);
+
+  // Reset when wallet disconnects
+  useEffect(() => {
+    if (!isLoggedIn || !primaryWallet) {
+      lineraAdapter.reset();
+      providerRef.current = null;
+      setChainConnected(false);
+      setAppConnected(false);
+      setRegistryChainId(null);
+      setError(null);
+    }
+  }, [isLoggedIn, primaryWallet]);
+
+  if (!mounted) return null;
+
+  return (
+    <div className="min-h-screen bg-zinc-50 p-4 dark:bg-black sm:p-8">
+      <div className="mx-auto max-w-4xl">
+        {/* Header */}
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-zinc-900 dark:text-white">
+              Cross-Chain Domain Query Test
+            </h1>
+            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+              Test the Request-Response pattern for querying domain ownership
+              across chains
+            </p>
+          </div>
+          <DynamicWidget />
+        </div>
+
+        {/* Error Display */}
+        {error && (
+          <div className="mb-6 rounded-lg bg-red-50 p-4 text-red-600 dark:bg-red-900/20 dark:text-red-400">
+            {error}
+          </div>
+        )}
+
+        {/* Connection Status */}
+        {!isLoggedIn ? (
+          <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center dark:border-zinc-700 dark:bg-zinc-900">
+            <p className="text-zinc-600 dark:text-zinc-400">
+              Please connect your wallet to use the Domain Checker
+            </p>
+          </div>
+        ) : !chainConnected || !appConnected ? (
+          <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center dark:border-zinc-700 dark:bg-zinc-900">
+            <p className="text-zinc-600 dark:text-zinc-400">
+              {isAutoConnecting
+                ? "Connecting to Linera..."
+                : "Waiting for connection..."}
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* App Info */}
+            <div className="mb-6 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900">
+              <h2 className="mb-2 font-semibold text-zinc-800 dark:text-zinc-200">
+                Application Info
+              </h2>
+              <div className="space-y-1 text-sm">
+                <p className="text-zinc-600 dark:text-zinc-400">
+                  <span className="font-medium">Domain Checker App ID:</span>{" "}
+                  <code className="rounded bg-zinc-100 px-1 font-mono text-xs dark:bg-zinc-800">
+                    {DOMAIN_CHECKER_APP_ID.slice(0, 16)}...
+                    {DOMAIN_CHECKER_APP_ID.slice(-8)}
+                  </code>
+                </p>
+                <p className="text-zinc-600 dark:text-zinc-400">
+                  <span className="font-medium">LNS App ID:</span>{" "}
+                  <code className="rounded bg-zinc-100 px-1 font-mono text-xs dark:bg-zinc-800">
+                    {LNS_APPLICATION_ID
+                      ? `${LNS_APPLICATION_ID.slice(0, 16)}...${LNS_APPLICATION_ID.slice(-8)}`
+                      : "Not set"}
+                  </code>
+                </p>
+                <p className="text-zinc-600 dark:text-zinc-400">
+                  <span className="font-medium">Registry Chain ID:</span>{" "}
+                  <code className="rounded bg-zinc-100 px-1 font-mono text-xs dark:bg-zinc-800">
+                    {registryChainId
+                      ? `${registryChainId.slice(0, 16)}...${registryChainId.slice(-8)}`
+                      : "Fetching..."}
+                  </code>
+                </p>
+              </div>
+            </div>
+
+            {/* Domain Checker Component */}
+            {registryChainId ? (
+              <DomainCheckerApp
+                domainCheckerAppId={DOMAIN_CHECKER_APP_ID}
+                registryChainId={registryChainId}
+              />
+            ) : (
+              <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center dark:border-zinc-700 dark:bg-zinc-900">
+                <p className="text-zinc-600 dark:text-zinc-400">
+                  Fetching registry chain ID...
+                </p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Back Link */}
+        <div className="mt-8 text-center">
+          <a
+            href="/"
+            className="text-sm text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300"
+          >
+            ← Back to LNS Main App
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+
+**Tool Call: 0 todos**
+Status: Completed
+
+[
+  {
+    "content": "Deploy domain_checker contract using linera CLI",
+    "id": "1",
+    "priority": "high",
+    "status": "completed"
+  },
+  {
+    "content": "Create new page for DomainCheckerApp component",
+    "id": "2",
+    "priority": "high",
+    "status": "completed"
+  }
+]
+
+## Assistant
+
+Let me verify the page was created correctly and check if there are any issues.
+
+**Tool Call: Verify domain-checker page was created**
+Status: Completed
+
+total 20
+drwxrwxr-x 2 uratmangun uratmangun 4096 Jan  4 20:22 .
+drwxrwxr-x 5 uratmangun uratmangun 4096 Jan  4 20:21 ..
+-rw-rw-r-- 1 uratmangun uratmangun 8519 Jan  4 20:22 page.tsx
+
+
+**Tool Call: Build the Next.js app to verify no errors**
+Status: Completed
+
+$ next build
+   ▲ Next.js 16.0.9 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 26.2s
+   Skipping validation of types
+   Collecting page data using 11 workers ...
+   Generating static pages using 11 workers (0/6) ...
+   Generating static pages using 11 workers (1/6) 
+(node:43268) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+   Generating static pages using 11 workers (2/6) 
+   Generating static pages using 11 workers (4/6) 
+ ✓ Generating static pages using 11 workers (6/6) in 2.9s
+   Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/linera
+├ ○ /debug
+└ ○ /domain-checker
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+
+
+## Assistant
+
+The build succeeded. Here's a summary of what was completed:
+
+## Summary
+
+### Deployed Contract
+- **Application ID:** `d290e51ebcb758ae7fdd083407f8744aacd0a80dbf71f66a168fa7bcec21356e`
+- **Chain:** `165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc`
+
+### Created Files
+
+| File | Description |
+|------|-------------|
+| `src/app/domain-checker/page.tsx` | New page at `/domain-checker` that uses the `DomainCheckerApp` component |
+| `src/components/domain-checker-app.tsx` | Component for testing cross-chain domain queries |
+
+### Routes Available
+
+```
+Route (app)
+├ ○ /                    # Main LNS app
+├ ○ /debug               # Debug page
+├ ○ /domain-checker      # NEW: Cross-chain query test page
+└ ƒ /api/linera          # API route
+```
+
+### How to Test
+
+1. Start the dev server (manually):
+   ```bash
+   bun dev
+   ```
+
+2. Navigate to `http://localhost:3000/domain-checker`
+
+3. Connect your wallet
+
+4. Enter a domain name and click "Query via Contract"
+
+5. The component will:
+   - Send a `CheckOwnership` operation to the `domain_checker` contract
+   - The contract sends a cross-chain message to the LNS registry
+   - Poll for the response (may take 10-30 seconds)
+   - Display the cached result from the contract's state
+
+### Important Notes
+
+- The `domain_checker` contract is deployed on chain `165f2f8a...`
+- It needs to communicate with the LNS registry on its chain
+- Cross-chain messages are **asynchronous** - expect delays of 10-30 seconds
+- Results are cached in the `domain_checker` contract's state for future queries
+
+## User
+
+can you check http://localhost:3000/domain-checker why do fetching registry chain id is so slow in here but faster in http://localhost:3000/debug use chrome devtools mcp to check any error on the browser and fix that
+
+## User
+
+can you check http://localhost:3000/domain-checker why do fetching registry chain id is so slow in here but faster in http://localhost:3000/debug use chrome devtools mcp to check any error on the browser and fix that
+
+**Tool Call: **
+Status: Completed
+
+# list_pages response
+## Pages
+0: https://app.kiro.dev/signin?auth_status=success&redirect_from=kirocli [selected]
+1: https://x.com/home
+2: https://discord.com/channels/1241378547680022529/1246433739089907832
+3: https://github.com/uratmangun?tab=repositories
+4: http://localhost:3000/domain-checker
+5: https://www.iq.com/play/campfire-cooking-in-another-world-with-my-absurd-skill-season-2-episode-7-jgqg7gl0f0?lang=en_us
+6: https://github.com/NoeFabris/opencode-antigravity-auth/issues/103
+7: chrome-error://chromewebdata/
+8: https://opencode.ai/docs/agents/
+9: https://chatgpt.com/c/695a45e4-2e5c-8323-a2c8-faf6f7e63154
+10: https://www.youtube.com/watch?v=Qwi0hbr2DJo&t=3815s
+
+**Tool Call: **
+Status: Completed
+
+# select_page response
+## Pages
+0: https://app.kiro.dev/signin?auth_status=success&redirect_from=kirocli
+1: https://x.com/home
+2: https://discord.com/channels/1241378547680022529/1246433739089907832
+3: https://github.com/uratmangun?tab=repositories
+4: http://localhost:3000/domain-checker [selected]
+5: https://www.iq.com/play/campfire-cooking-in-another-world-with-my-absurd-skill-season-2-episode-7-jgqg7gl0f0?lang=en_us
+6: https://github.com/NoeFabris/opencode-antigravity-auth/issues/103
+7: chrome-error://chromewebdata/
+8: https://opencode.ai/docs/agents/
+9: https://chatgpt.com/c/695a45e4-2e5c-8323-a2c8-faf6f7e63154
+10: https://www.youtube.com/watch?v=Qwi0hbr2DJo&t=3815s
+
+**Tool Call: **
+Status: Completed
+
+# list_console_messages response
+## Console messages
+<no console messages found>
+
+**Tool Call: **
+Status: Completed
+
+# take_snapshot response
+## Latest page snapshot
+uid=1_0 RootWebArea "Linera Name System | Secure Web3 Identities" url="http://localhost:3000/domain-checker"
+  uid=1_1 button "Open Next.js Dev Tools" expandable haspopup="menu"
+  uid=1_2 button "Open issues overlay"
+  uid=1_3 button "Collapse issues badge"
+  uid=1_4 heading "Cross-Chain Domain Query Test" level="1"
+  uid=1_5 StaticText "Test the Request-Response pattern for querying domain ownership across chains"
+  uid=1_6 image "Ethereum Mainnet icon" url="https://app.dynamic.xyz/assets/networks/eth.svg"
+  uid=1_7 StaticText "Ethereum"
+  uid=1_8 button "rainbow 0x13...8675"
+  uid=1_9 heading "Application Info" level="2"
+  uid=1_10 StaticText "Domain Checker App ID:"
+  uid=1_11 StaticText " "
+  uid=1_12 StaticText "d290e51ebcb758ae"
+  uid=1_13 StaticText "..."
+  uid=1_14 StaticText "ec21356e"
+  uid=1_15 StaticText "LNS App ID:"
+  uid=1_16 StaticText " "
+  uid=1_17 StaticText "a74a56f1b4ed372d...2c80e34f"
+  uid=1_18 StaticText "Registry Chain ID:"
+  uid=1_19 StaticText " "
+  uid=1_20 StaticText "Fetching..."
+  uid=1_21 StaticText "Fetching registry chain ID..."
+  uid=1_22 link "← Back to LNS Main App" url="http://localhost:3000/"
+    uid=1_23 StaticText "← Back to LNS Main App"
+
+
+**Tool Call: **
+Status: Completed
+
+# list_console_messages response
+## Console messages
+<no console messages found>
+
+**Tool Call: **
+Status: Completed
+
+# navigate_page response
+Successfully reloaded the page.
+## Pages
+0: https://app.kiro.dev/signin?auth_status=success&redirect_from=kirocli
+1: https://x.com/home
+2: https://discord.com/channels/1241378547680022529/1246433739089907832
+3: https://github.com/uratmangun?tab=repositories
+4: http://localhost:3000/domain-checker [selected]
+5: https://www.iq.com/play/campfire-cooking-in-another-world-with-my-absurd-skill-season-2-episode-7-jgqg7gl0f0?lang=en_us
+6: https://github.com/NoeFabris/opencode-antigravity-auth/issues/103
+7: chrome-error://chromewebdata/
+8: https://opencode.ai/docs/agents/
+9: https://chatgpt.com/c/695a45e4-2e5c-8323-a2c8-faf6f7e63154
+10: https://www.youtube.com/watch?v=Qwi0hbr2DJo&t=3815s
+
+**Tool Call: **
+Status: Completed
+
+# list_console_messages response
+## Console messages
+Showing 1-22 of 22 (Page 1 of 1).
+msgid=9 [log] 🔗 Connecting with Dynamic wallet: 0x1320456c3B8E3eaf30BB7e86D774b9cB57198675 (2 args)
+msgid=10 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=11 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=12 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=13 [warn] using deprecated parameters for the initialization function; pass a single object instead (1 args)
+msgid=14 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=15 [log] ✅ Linera WASM modules initialized successfully (1 args)
+msgid=16 [info]  INFO linera_web: Requesting a new chain for owner 0x1320456c3b8e3eaf30bb7e86d774b9cb57198675 using the faucet at address https://faucet.testnet-conway.linera.net
+ (1 args)
+msgid=135 [info]  INFO background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}: linera_client::chain_listener: Starting background certificate sync for chain 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20
+ (1 args)
+msgid=137 [info]  INFO background_sync_received_certificates{chain_id=8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7}: linera_client::chain_listener: Starting background certificate sync for chain 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7
+ (1 args)
+msgid=139 [log] ✅ Linera wallet created successfully! (1 args)
+msgid=140 [log] 🔍 Client methods: JSHandle@array function (3 args)
+msgid=141 [log] ✅ Linera application set successfully! (1 args)
+msgid=142 [log] 🔍 Querying application on chain a74a56f1b4ed372d... (1 args)
+msgid=227 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=228 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=254 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:download_certificates_by_heights{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc heights=[BlockHeight(40), BlockHeight(41), BlockHeight(51), BlockHeight(52), BlockHeight(54), BlockHeight(55), BlockHeight(58), BlockHeight(59), BlockHeight(61), BlockHeight(65), BlockHeight(66), BlockHeight(67), BlockHeight(68), BlockHeight(69)] address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Grpc error: remote request [download_raw_certificates_by_heights] failed with status: Status { code: Internal, message: "Chain info query failed: Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=260 [warn]  WARN blob_last_used_by_certificate{blob_id=BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 } address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Grpc error: remote request [blob_last_used_by_certificate] failed with status: Status { code: NotFound, message: "Blob not found ChainDescription:72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=300 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=301 [warn]  WARN handle_chain_info_query{address="https://linera.banansen.dev:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=302 [warn]  WARN handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=303 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.runtime-client-rpc.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+
+**Tool Call: **
+Status: Completed
+
+# get_console_message response
+ID: 142
+Message: log> 🔍 Querying application on chain a74a56f1b4ed372d...
+### Arguments
+Arg #0: 🔍 Querying application on chain a74a56f1b4ed372d...
+
+**Tool Call: **
+Status: Completed
+
+# list_console_messages response
+## Console messages
+Showing 1-32 of 32 (Page 1 of 1).
+msgid=9 [log] 🔗 Connecting with Dynamic wallet: 0x1320456c3B8E3eaf30BB7e86D774b9cB57198675 (2 args)
+msgid=10 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=11 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=12 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=13 [warn] using deprecated parameters for the initialization function; pass a single object instead (1 args)
+msgid=14 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=15 [log] ✅ Linera WASM modules initialized successfully (1 args)
+msgid=16 [info]  INFO linera_web: Requesting a new chain for owner 0x1320456c3b8e3eaf30bb7e86d774b9cb57198675 using the faucet at address https://faucet.testnet-conway.linera.net
+ (1 args)
+msgid=135 [info]  INFO background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}: linera_client::chain_listener: Starting background certificate sync for chain 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20
+ (1 args)
+msgid=137 [info]  INFO background_sync_received_certificates{chain_id=8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7}: linera_client::chain_listener: Starting background certificate sync for chain 8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7
+ (1 args)
+msgid=139 [log] ✅ Linera wallet created successfully! (1 args)
+msgid=140 [log] 🔍 Client methods: JSHandle@array function (3 args)
+msgid=141 [log] ✅ Linera application set successfully! (1 args)
+msgid=142 [log] 🔍 Querying application on chain a74a56f1b4ed372d... (1 args)
+msgid=227 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=228 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=254 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:download_certificates_by_heights{chain_id=165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc heights=[BlockHeight(40), BlockHeight(41), BlockHeight(51), BlockHeight(52), BlockHeight(54), BlockHeight(55), BlockHeight(58), BlockHeight(59), BlockHeight(61), BlockHeight(65), BlockHeight(66), BlockHeight(67), BlockHeight(68), BlockHeight(69)] address="https://linera-testnet.talentum.id:443"}: grpc_client: error=Grpc error: remote request [download_raw_certificates_by_heights] failed with status: Status { code: Internal, message: "Chain info query failed: Blobs not found: [BlobId { blob_type: ChainDescription, hash: 165f2f8a389e61d870d0afa52803643df413e4d085aef63666bd8fd9fce4ffcc }]", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=260 [warn]  WARN blob_last_used_by_certificate{blob_id=BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 } address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Grpc error: remote request [blob_last_used_by_certificate] failed with status: Status { code: NotFound, message: "Blob not found ChainDescription:72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=300 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=301 [warn]  WARN handle_chain_info_query{address="https://linera.banansen.dev:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=302 [warn]  WARN handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=303 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.runtime-client-rpc.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=479 [warn]  WARN background_sync_received_certificates{chain_id=8fd4233c5d03554f87d47a711cf70619727ca3d148353446cab81fb56922c9b7}:download_blob{blob_id=BlobId { blob_type: ChainDescription, hash: e9a015fefb6bba604d5504c1637721c99296f99b72457ef8699e44cc81a0921a } address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Grpc error: remote request [download_blob] failed with status: Status { code: NotFound, message: "Blob not found ChainDescription:e9a015fefb6bba604d5504c1637721c99296f99b72457ef8699e44cc81a0921a", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=489 [info]  INFO background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}: linera_core::client: find_received_certificates finished
+ (1 args)
+msgid=564 [warn]  WARN handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=565 [info]  INFO linera_core::client: could not connect to validator error=RemoteNodeError(BlobsNotFound([BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }])) address="https://conway1.linera.blockhunters.services:443"
+ (1 args)
+msgid=571 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=572 [info]  INFO linera_core::client: could not connect to validator error=RemoteNodeError(BlobsNotFound([BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }])) address="https://linera-testnet.stakefi.network:443"
+ (1 args)
+msgid=619 [warn]  WARN handle_chain_info_query{address="https://linera.banansen.dev:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=620 [info]  INFO linera_core::client: could not connect to validator error=RemoteNodeError(BlobsNotFound([BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }])) address="https://linera.banansen.dev:443"
+ (1 args)
+msgid=622 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.runtime-client-rpc.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=623 [info]  INFO linera_core::client: could not connect to validator error=RemoteNodeError(BlobsNotFound([BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }])) address="https://linera-testnet.runtime-client-rpc.com:443"
+ (1 args)
+
+## Assistant
+
+I can see the issue. Looking at the console logs:
+
+1. `msgid=142` shows: `🔍 Querying application on chain a74a56f1b4ed372d...`
+
+The problem is in the `fetchRegistryChainId` function in `domain-checker/page.tsx`. It's trying to query the LNS application on chain `a74a56f1b4ed372d...` (extracted from the LNS application ID), but this is causing slow queries because it's trying to sync with that chain.
+
+Let me check the code and compare with how the debug page does it:
+
+**Tool Call: src/app/domain-checker/page.tsx**
+Status: Completed
+
+<file>
+00076|   useEffect(() => {
+00077|     if (mounted && isLoggedIn && primaryWallet && !chainConnected) {
+00078|       autoConnect();
+00079|     }
+00080|   }, [mounted, isLoggedIn, primaryWallet, chainConnected, autoConnect]);
+00081| 
+00082|   // Fetch registry chain ID from LNS application
+00083|   const fetchRegistryChainId = useCallback(async () => {
+00084|     if (!LNS_APPLICATION_ID) return;
+00085| 
+00086|     try {
+00087|       // Query the LNS application for registry chain ID
+00088|       const result = await lineraAdapter.queryApplicationOnChain<{
+00089|         data?: { registryChainId: string };
+00090|         errors?: Array<{ message: string }>;
+00091|       }>(
+00092|         // We need to query any chain that has the LNS app - use the creator chain from app ID
+00093|         LNS_APPLICATION_ID.slice(0, 64), // Extract chain ID from application ID
+00094|         LNS_APPLICATION_ID,
+00095|         `query { registryChainId }`,
+00096|       );
+00097| 
+00098|       if (result.data?.registryChainId) {
+00099|         setRegistryChainId(result.data.registryChainId);
+00100|       }
+00101|     } catch (err) {
+00102|       console.error("Failed to fetch registry chain ID:", err);
+00103|       // Fallback: extract from LNS application ID (first 64 chars is the chain ID)
+00104|       if (LNS_APPLICATION_ID.length >= 64) {
+00105|         setRegistryChainId(LNS_APPLICATION_ID.slice(0, 64));
+00106|       }
+00107|     }
+00108|   }, []);
+00109| 
+00110|   useEffect(() => {
+00111|     if (appConnected && LNS_APPLICATION_ID) {
+00112|       fetchRegistryChainId();
+00113|     }
+00114|   }, [appConnected, fetchRegistryChainId]);
+00115| 
+00116|   // Reset when wallet disconnects
+00117|   useEffect(() => {
+00118|     if (!isLoggedIn || !primaryWallet) {
+00119|       lineraAdapter.reset();
+00120|       providerRef.current = null;
+00121|       setChainConnected(false);
+00122|       setAppConnected(false);
+00123|       setRegistryChainId(null);
+00124|       setError(null);
+00125|     }
+
+(File has more lines. Use 'offset' parameter to read beyond line 125)
+</file>
+
+**Tool Call: src/components/counter-app.tsx**
+Status: Completed
+
+<file>
+00186|     }
+00187|   }, [chainConnected]);
+00188| 
+00189|   // Fetch registry chain ID
+00190|   const fetchRegistryInfo = useCallback(async () => {
+00191|     if (!appConnected) return;
+00192| 
+00193|     try {
+00194|       const registryResult = await lineraAdapter.queryApplication<{
+00195|         data?: { registryChainId: string | null };
+00196|         errors?: Array<{ message: string }>;
+00197|       }>({
+00198|         query: `query { registryChainId }`,
+00199|       });
+00200|       if (registryResult.data?.registryChainId) {
+00201|         setRegistryChainId(registryResult.data.registryChainId);
+00202|       }
+00203|     } catch (err) {
+00204|       console.error("Failed to fetch registry chain ID:", err);
+00205|     }
+00206|   }, [appConnected]);
+00207| 
+00208|   // Fetch all registered domains from registry chain
+00209|   const fetchAllDomains = useCallback(async () => {
+00210|     if (!appConnected || !registryChainId) return;
+00211|     setIsLoadingDomains(true);
+00212| 
+00213|     try {
+00214|       // Query the registry chain directly for authoritative data
+00215|       const result = await lineraAdapter.queryApplicationOnChain<{
+
+(File has more lines. Use 'offset' parameter to read beyond line 215)
+</file>
+
+## Assistant
+
+I see the issue. The `domain-checker/page.tsx` is using `queryApplicationOnChain` which requires syncing with a different chain, while `counter-app.tsx` uses `queryApplication` which queries the currently connected application directly.
+
+The problem is:
+1. In `domain-checker/page.tsx`, we set the application to `DOMAIN_CHECKER_APP_ID` 
+2. Then we try to query `LNS_APPLICATION_ID` on a different chain using `queryApplicationOnChain`
+3. This causes slow chain syncing
+
+The fix is to simply use the LNS application ID's first 64 characters as the registry chain ID directly (since the application ID format is `<chain_id><bytecode_id>`), without needing to query it.
+
+**Tool Call: src/app/domain-checker/page.tsx**
+Status: Completed
+
+
+
+Diff: /home/uratmangun/CascadeProjects/linera-name-system-worktree/src/app/domain-checker/page.tsx
+```
+  // Set registry chain ID from LNS application ID
+  // The application ID format is <chain_id (64 chars)><bytecode_id>
+  // So we can extract the registry chain ID directly without querying
+  useEffect(() => {
+    if (appConnected && LNS_APPLICATION_ID && LNS_APPLICATION_ID.length >= 64) {
+      // Extract chain ID from LNS application ID (first 64 hex chars)
+      const extractedChainId = LNS_APPLICATION_ID.slice(0, 64);
+      setRegistryChainId(extractedChainId);
+    }
+  }, [appConnected]);
+```
+
+
+**Tool Call: **
+Status: Completed
+
+# navigate_page response
+Successfully reloaded the page.
+## Pages
+0: https://app.kiro.dev/signin?auth_status=success&redirect_from=kirocli
+1: https://x.com/home
+2: https://discord.com/channels/1241378547680022529/1246433739089907832
+3: https://github.com/uratmangun?tab=repositories
+4: http://localhost:3000/debug [selected]
+5: https://www.iq.com/play/campfire-cooking-in-another-world-with-my-absurd-skill-season-2-episode-7-jgqg7gl0f0?lang=en_us
+6: https://github.com/NoeFabris/opencode-antigravity-auth/issues/103
+7: chrome-error://chromewebdata/
+8: https://opencode.ai/docs/agents/
+9: https://chatgpt.com/c/695a45e4-2e5c-8323-a2c8-faf6f7e63154
+10: https://www.youtube.com/watch?v=Qwi0hbr2DJo&t=3815s
+
+**Tool Call: **
+Status: Completed
+
+# navigate_page response
+Successfully navigated to http://localhost:3000/domain-checker.
+## Pages
+0: https://app.kiro.dev/signin?auth_status=success&redirect_from=kirocli
+1: https://x.com/home
+2: https://discord.com/channels/1241378547680022529/1246433739089907832
+3: https://github.com/uratmangun?tab=repositories
+4: http://localhost:3000/domain-checker [selected]
+5: https://www.iq.com/play/campfire-cooking-in-another-world-with-my-absurd-skill-season-2-episode-7-jgqg7gl0f0?lang=en_us
+6: https://github.com/NoeFabris/opencode-antigravity-auth/issues/103
+7: chrome-error://chromewebdata/
+8: https://opencode.ai/docs/agents/
+9: https://chatgpt.com/c/695a45e4-2e5c-8323-a2c8-faf6f7e63154
+10: https://www.youtube.com/watch?v=Qwi0hbr2DJo&t=3815s
+
+**Tool Call: **
+Status: Completed
+
+# take_snapshot response
+## Latest page snapshot
+uid=2_0 RootWebArea "Linera Name System | Secure Web3 Identities" url="http://localhost:3000/domain-checker"
+  uid=2_1 button "Open Next.js Dev Tools" expandable haspopup="menu"
+  uid=2_2 button "Open issues overlay"
+  uid=2_3 button "Collapse issues badge"
+  uid=2_4 heading "Cross-Chain Domain Query Test" level="1"
+  uid=2_5 StaticText "Test the Request-Response pattern for querying domain ownership across chains"
+  uid=2_6 image "Ethereum Mainnet icon" url="https://app.dynamic.xyz/assets/networks/eth.svg"
+  uid=2_7 StaticText "Ethereum"
+  uid=2_8 button "rainbow 0x13...8675"
+  uid=2_9 heading "Application Info" level="2"
+  uid=2_10 StaticText "Domain Checker App ID:"
+  uid=2_11 StaticText " "
+  uid=2_12 StaticText "d290e51ebcb758ae"
+  uid=2_13 StaticText "..."
+  uid=2_14 StaticText "ec21356e"
+  uid=2_15 StaticText "LNS App ID:"
+  uid=2_16 StaticText " "
+  uid=2_17 StaticText "a74a56f1b4ed372d...2c80e34f"
+  uid=2_18 StaticText "Registry Chain ID:"
+  uid=2_19 StaticText " "
+  uid=2_20 StaticText "a74a56f1b4ed372d...2c80e34f"
+  uid=2_21 heading "Cross-Chain Domain Query Test" level="2"
+  uid=2_22 StaticText "This component tests the Request-Response pattern for cross-chain state queries. It uses the"
+  uid=2_23 StaticText " "
+  uid=2_24 StaticText "domain_checker"
+  uid=2_25 StaticText " "
+  uid=2_26 StaticText "contract to query domain ownership from the LNS registry on another chain."
+  uid=2_27 StaticText "Current Chain:"
+  uid=2_28 StaticText " "
+  uid=2_29 StaticText "Not connected"
+  uid=2_30 StaticText "Registry Chain:"
+  uid=2_31 StaticText " "
+  uid=2_32 StaticText "a74a56f1b4ed..."
+  uid=2_33 StaticText "Domain Checker App:"
+  uid=2_34 StaticText " "
+  uid=2_35 StaticText "d290e51ebcb7..."
+  uid=2_36 StaticText "Domain Name to Query"
+  uid=2_37 textbox "Domain Name to Query"
+  uid=2_38 StaticText ".linera"
+  uid=2_39 button "Query via Contract" disableable disabled
+  uid=2_40 heading "Cached Query Results" level="3"
+  uid=2_41 button "Refresh"
+  uid=2_42 StaticText "No cached queries yet. Query a domain to see results stored in the contract."
+  uid=2_43 heading "How Cross-Chain Query Works" level="3"
+  uid=2_44 StaticText "User calls"
+  uid=2_45 StaticText " "
+  uid=2_46 StaticText "checkOwnership"
+  uid=2_47 StaticText " "
+  uid=2_48 StaticText "on domain_checker contract"
+  uid=2_49 StaticText "Contract sends"
+  uid=2_50 StaticText " "
+  uid=2_51 StaticText "RequestCheckOwnership"
+  uid=2_52 StaticText " "
+  uid=2_53 StaticText "message to LNS registry chain"
+  uid=2_54 StaticText "LNS registry processes the request and sends"
+  uid=2_55 StaticText " "
+  uid=2_56 StaticText "OwnershipResponse"
+  uid=2_57 StaticText " "
+  uid=2_58 StaticText "back"
+  uid=2_59 StaticText "domain_checker receives the response and stores it in state"
+  uid=2_60 StaticText "UI polls the contract state to retrieve the result"
+  uid=2_61 StaticText "Note: Cross-chain messages are asynchronous and may take several seconds to propagate."
+  uid=2_62 link "← Back to LNS Main App" url="http://localhost:3000/"
+    uid=2_63 StaticText "← Back to LNS Main App"
+
+
+## Assistant
+
+The registry chain ID is now showing immediately (`a74a56f1b4ed372d...2c80e34f`). The fix worked - instead of making a slow cross-chain query, we now extract the chain ID directly from the LNS application ID.
+
+However, I notice the "Current Chain" shows "Not connected" in the DomainCheckerApp component. Let me check if there's an issue with the component's chain ID fetching:
+
+**Tool Call: **
+Status: Completed
+
+# list_console_messages response
+## Console messages
+Showing 1-29 of 29 (Page 1 of 1).
+msgid=1415 [log] 🔗 Connecting with Dynamic wallet: 0x1320456c3B8E3eaf30BB7e86D774b9cB57198675 (2 args)
+msgid=1416 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=1417 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=1418 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=1419 [warn] using deprecated parameters for the initialization function; pass a single object instead (1 args)
+msgid=1420 [error] Error in invocation of runtime.sendMessage(optional string extensionId, any message, optional object options, optional function callback): chrome.runtime.sendMessage() called from a webpage must specify an Extension ID (string) for its first argument. (0 args)
+msgid=1421 [log] ✅ Linera WASM modules initialized successfully (1 args)
+msgid=1545 [log] ✅ Linera wallet created successfully! (1 args)
+msgid=1546 [log] 🔍 Client methods: JSHandle@array function (3 args)
+msgid=1547 [log] ✅ Linera application set successfully! (1 args)
+msgid=1632 [log] [Fast Refresh] rebuilding (1 args)
+msgid=1633 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1635 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1636 [warn]  WARN background_sync_received_certificates{chain_id=72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20}:handle_chain_info_query{address="https://linera-testnet.runtime-client-rpc.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1658 [log] [Fast Refresh] done in 493ms (1 args)
+msgid=1664 [warn]  WARN blob_last_used_by_certificate{blob_id=BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 } address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Grpc error: remote request [blob_last_used_by_certificate] failed with status: Status { code: NotFound, message: "Blob not found ChainDescription:72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=1666 [warn]  WARN blob_last_used_by_certificate{blob_id=BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 } address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Grpc error: remote request [blob_last_used_by_certificate] failed with status: Status { code: NotFound, message: "Blob not found ChainDescription:72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=1679 [warn]  WARN blob_last_used_by_certificate{blob_id=BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 } address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Grpc error: remote request [blob_last_used_by_certificate] failed with status: Status { code: NotFound, message: "Blob not found ChainDescription:72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=1682 [warn]  WARN blob_last_used_by_certificate{blob_id=BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 } address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Grpc error: remote request [blob_last_used_by_certificate] failed with status: Status { code: NotFound, message: "Blob not found ChainDescription:72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20", metadata: MetadataMap { headers: {"content-length": "0", "content-type": "application/grpc-web+proto"} }, source: None }
+ (1 args)
+msgid=1736 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1737 [warn]  WARN handle_chain_info_query{address="https://linera.banansen.dev:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1738 [warn]  WARN handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1757 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.runtime-client-rpc.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1785 [log] ✅ Linera application queried successfully! (1 args)
+msgid=1786 [log] ✅ Linera application queried successfully! (1 args)
+msgid=1870 [warn]  WARN handle_chain_info_query{address="https://conway1.linera.blockhunters.services:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1887 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.stakefi.network:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1925 [warn]  WARN handle_chain_info_query{address="https://linera.banansen.dev:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+msgid=1928 [warn]  WARN handle_chain_info_query{address="https://linera-testnet.runtime-client-rpc.com:443"}: grpc_client: error=Blobs not found: [BlobId { blob_type: ChainDescription, hash: 72a1589378d71e8a40173123d69b3e3740379f2f6ae20af3bbfbd8f196938c20 }]
+ (1 args)
+
+**Tool Call: **
+Status: Completed
+
+# take_snapshot response
+## Latest page snapshot
+uid=3_0 RootWebArea "Linera Name System | Secure Web3 Identities" url="http://localhost:3000/domain-checker"
+  uid=3_1 button "Open Next.js Dev Tools" expandable haspopup="menu"
+  uid=3_2 button "Open issues overlay"
+  uid=3_3 button "Collapse issues badge"
+  uid=3_4 heading "Cross-Chain Domain Query Test" level="1"
+  uid=3_5 StaticText "Test the Request-Response pattern for querying domain ownership across chains"
+  uid=3_6 image "Ethereum Mainnet icon" url="https://app.dynamic.xyz/assets/networks/eth.svg"
+  uid=3_7 StaticText "Ethereum"
+  uid=3_8 button "rainbow 0x13...8675"
+  uid=3_9 heading "Application Info" level="2"
+  uid=3_10 StaticText "Domain Checker App ID:"
+  uid=3_11 StaticText " "
+  uid=3_12 StaticText "d290e51ebcb758ae"
+  uid=3_13 StaticText "..."
+  uid=3_14 StaticText "ec21356e"
+  uid=3_15 StaticText "LNS App ID:"
+  uid=3_16 StaticText " "
+  uid=3_17 StaticText "a74a56f1b4ed372d...2c80e34f"
+  uid=3_18 StaticText "Registry Chain ID:"
+  uid=3_19 StaticText " "
+  uid=3_20 StaticText "a74a56f1b4ed372d...2c80e34f"
+  uid=3_21 heading "Cross-Chain Domain Query Test" level="2"
+  uid=3_22 StaticText "This component tests the Request-Response pattern for cross-chain state queries. It uses the"
+  uid=3_23 StaticText " "
+  uid=3_24 StaticText "domain_checker"
+  uid=3_25 StaticText " "
+  uid=3_26 StaticText "contract to query domain ownership from the LNS registry on another chain."
+  uid=3_27 StaticText "Current Chain:"
+  uid=3_28 StaticText " "
+  uid=3_29 StaticText "72a1589378d7..."
+  uid=3_30 StaticText "Registry Chain:"
+  uid=3_31 StaticText " "
+  uid=3_32 StaticText "a74a56f1b4ed..."
+  uid=3_33 StaticText "Domain Checker App:"
+  uid=3_34 StaticText " "
+  uid=3_35 StaticText "d290e51ebcb7..."
+  uid=3_36 StaticText "Domain Name to Query"
+  uid=3_37 textbox "Domain Name to Query"
+  uid=3_38 StaticText ".linera"
+  uid=3_39 button "Query via Contract" disableable disabled
+  uid=3_40 heading "Cached Query Results" level="3"
+  uid=3_41 button "Refresh"
+  uid=3_42 StaticText "No cached queries yet. Query a domain to see results stored in the contract."
+  uid=3_43 heading "How Cross-Chain Query Works" level="3"
+  uid=3_44 StaticText "User calls"
+  uid=3_45 StaticText " "
+  uid=3_46 StaticText "checkOwnership"
+  uid=3_47 StaticText " "
+  uid=3_48 StaticText "on domain_checker contract"
+  uid=3_49 StaticText "Contract sends"
+  uid=3_50 StaticText " "
+  uid=3_51 StaticText "RequestCheckOwnership"
+  uid=3_52 StaticText " "
+  uid=3_53 StaticText "message to LNS registry chain"
+  uid=3_54 StaticText "LNS registry processes the request and sends"
+  uid=3_55 StaticText " "
+  uid=3_56 StaticText "OwnershipResponse"
+  uid=3_57 StaticText " "
+  uid=3_58 StaticText "back"
+  uid=3_59 StaticText "domain_checker receives the response and stores it in state"
+  uid=3_60 StaticText "UI polls the contract state to retrieve the result"
+  uid=3_61 StaticText "Note: Cross-chain messages are asynchronous and may take several seconds to propagate."
+  uid=3_62 link "← Back to LNS Main App" url="http://localhost:3000/"
+    uid=3_63 StaticText "← Back to LNS Main App"
+
+
+## Assistant
+
+The page is now loading much faster. I can see:
+- **Registry Chain ID:** `a74a56f1b4ed372d...2c80e34f` (showing immediately)
+- **Current Chain:** `72a1589378d7...` (now showing correctly)
+
+The fix worked. The issue was that the original code was trying to make a cross-chain query to fetch the registry chain ID, which required syncing with a different chain and caused significant delays. By extracting the chain ID directly from the LNS application ID (first 64 hex characters), we avoid the slow network call entirely.
+
+Let me verify the button is now enabled and the page is fully functional:
+
+**Tool Call: **
+Status: Completed
+
+# fill response
+Successfully filled out the element
+## Latest page snapshot
+uid=4_0 RootWebArea "Linera Name System | Secure Web3 Identities" url="http://localhost:3000/domain-checker"
+  uid=4_1 button "Open Next.js Dev Tools" expandable haspopup="menu"
+  uid=4_2 button "Open issues overlay"
+  uid=4_3 button "Collapse issues badge"
+  uid=4_4 heading "Cross-Chain Domain Query Test" level="1"
+  uid=4_5 StaticText "Test the Request-Response pattern for querying domain ownership across chains"
+  uid=4_6 image "Ethereum Mainnet icon" url="https://app.dynamic.xyz/assets/networks/eth.svg"
+  uid=4_7 StaticText "Ethereum"
+  uid=4_8 button "rainbow 0x13...8675"
+  uid=4_9 heading "Application Info" level="2"
+  uid=4_10 StaticText "Domain Checker App ID:"
+  uid=4_11 StaticText " "
+  uid=4_12 StaticText "d290e51ebcb758ae"
+  uid=4_13 StaticText "..."
+  uid=4_14 StaticText "ec21356e"
+  uid=4_15 StaticText "LNS App ID:"
+  uid=4_16 StaticText " "
+  uid=4_17 StaticText "a74a56f1b4ed372d...2c80e34f"
+  uid=4_18 StaticText "Registry Chain ID:"
+  uid=4_19 StaticText " "
+  uid=4_20 StaticText "a74a56f1b4ed372d...2c80e34f"
+  uid=4_21 heading "Cross-Chain Domain Query Test" level="2"
+  uid=4_22 StaticText "This component tests the Request-Response pattern for cross-chain state queries. It uses the"
+  uid=4_23 StaticText " "
+  uid=4_24 StaticText "domain_checker"
+  uid=4_25 StaticText " "
+  uid=4_26 StaticText "contract to query domain ownership from the LNS registry on another chain."
+  uid=4_27 StaticText "Current Chain:"
+  uid=4_28 StaticText " "
+  uid=4_29 StaticText "72a1589378d7..."
+  uid=4_30 StaticText "Registry Chain:"
+  uid=4_31 StaticText " "
+  uid=4_32 StaticText "a74a56f1b4ed..."
+  uid=4_33 StaticText "Domain Checker App:"
+  uid=4_34 StaticText " "
+  uid=4_35 StaticText "d290e51ebcb7..."
+  uid=4_36 StaticText "Domain Name to Query"
+  uid=4_37 textbox "Domain Name to Query" focusable focused value="test"
+  uid=4_38 StaticText ".linera"
+  uid=4_39 button "Query via Contract"
+  uid=4_40 heading "Cached Query Results" level="3"
+  uid=4_41 button "Refresh"
+  uid=4_42 StaticText "No cached queries yet. Query a domain to see results stored in the contract."
+  uid=4_43 heading "How Cross-Chain Query Works" level="3"
+  uid=4_44 StaticText "User calls"
+  uid=4_45 StaticText " "
+  uid=4_46 StaticText "checkOwnership"
+  uid=4_47 StaticText " "
+  uid=4_48 StaticText "on domain_checker contract"
+  uid=4_49 StaticText "Contract sends"
+  uid=4_50 StaticText " "
+  uid=4_51 StaticText "RequestCheckOwnership"
+  uid=4_52 StaticText " "
+  uid=4_53 StaticText "message to LNS registry chain"
+  uid=4_54 StaticText "LNS registry processes the request and sends"
+  uid=4_55 StaticText " "
+  uid=4_56 StaticText "OwnershipResponse"
+  uid=4_57 StaticText " "
+  uid=4_58 StaticText "back"
+  uid=4_59 StaticText "domain_checker receives the response and stores it in state"
+  uid=4_60 StaticText "UI polls the contract state to retrieve the result"
+  uid=4_61 StaticText "Note: Cross-chain messages are asynchronous and may take several seconds to propagate."
+  uid=4_62 link "← Back to LNS Main App" url="http://localhost:3000/"
+    uid=4_63 StaticText "← Back to LNS Main App"
+
+
+## Assistant
+
+The button is now enabled (uid=4_39 shows "Query via Contract" without the disabled attribute). The fix is working correctly.
+
+Let me summarize what was fixed:
+
+## Summary of Fix
+
+**Problem:** The `/domain-checker` page was slow to load because it was making a cross-chain query to fetch the registry chain ID, which required syncing with a different chain.
+
+**Root Cause:** In `src/app/domain-checker/page.tsx`, the `fetchRegistryChainId` function was using `lineraAdapter.queryApplicationOnChain()` to query the LNS application on a different chain. This triggered slow chain synchronization.
+
+**Solution:** Instead of querying the registry chain ID via a network call, we extract it directly from the LNS application ID. The Linera application ID format is `<chain_id (64 hex chars)><bytecode_id>`, so the first 64 characters represent the chain where the application was created (which is the registry chain).
+
+**Code Change:**
+```typescript
+// Before (slow - makes cross-chain query)
+const fetchRegistryChainId = useCallback(async () => {
+  const result = await lineraAdapter.queryApplicationOnChain<...>(
+    LNS_APPLICATION_ID.slice(0, 64),
+    LNS_APPLICATION_ID,
+    `query { registryChainId }`
+  );
+  // ...
+}, []);
+
+// After (fast - extracts directly from app ID)
+useEffect(() => {
+  if (appConnected && LNS_APPLICATION_ID && LNS_APPLICATION_ID.length >= 64) {
+    const extractedChainId = LNS_APPLICATION_ID.slice(0, 64);
+    setRegistryChainId(extractedChainId);
+  }
+}, [appConnected]);
+```
+
+The page now loads instantly with all chain information displayed correctly:
+- **Current Chain:** `72a1589378d7...` (user's chain)
+- **Registry Chain:** `a74a56f1b4ed...` (LNS registry chain)
+- **Domain Checker App:** `d290e51ebcb7...` (deployed contract)
+
