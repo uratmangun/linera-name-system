@@ -18,6 +18,13 @@ const BOOTSTRAP_CHAIN_ID =
   process.env.LINERA_BOOTSTRAP_CHAIN_ID ||
   "e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65";
 
+// CORS headers for cross-origin access (LLM crawlers, external APIs)
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 interface DomainInfo {
   name: string;
   owner: string;
@@ -81,6 +88,14 @@ async function getRegistryChainId(): Promise<string | null> {
   return null;
 }
 
+// Handle CORS preflight requests
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders,
+  });
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> },
@@ -91,7 +106,7 @@ export async function GET(
     if (!name) {
       return NextResponse.json(
         { error: "Domain name is required" },
-        { status: 400 },
+        { status: 400, headers: corsHeaders },
       );
     }
 
@@ -104,7 +119,7 @@ export async function GET(
     if (!APPLICATION_ID) {
       return NextResponse.json(
         { error: "Application ID not configured" },
-        { status: 500 },
+        { status: 500, headers: corsHeaders },
       );
     }
 
@@ -112,7 +127,7 @@ export async function GET(
     if (!registryChainId) {
       return NextResponse.json(
         { error: "Registry chain ID not configured" },
-        { status: 500 },
+        { status: 500, headers: corsHeaders },
       );
     }
 
@@ -146,7 +161,7 @@ export async function GET(
           error: `Linera service error: ${response.status} ${response.statusText}`,
           details: errorText,
         },
-        { status: response.status },
+        { status: response.status, headers: corsHeaders },
       );
     }
 
@@ -158,7 +173,7 @@ export async function GET(
           error: "GraphQL error",
           details: result.errors[0].message,
         },
-        { status: 400 },
+        { status: 400, headers: corsHeaders },
       );
     }
 
@@ -169,18 +184,21 @@ export async function GET(
           name: normalizedName,
           available: true,
         },
-        { status: 404 },
+        { status: 404, headers: corsHeaders },
       );
     }
 
     // Return the domain data directly
-    return NextResponse.json({
-      success: true,
-      domain: {
-        ...result.data.domain,
-        fullName: `${result.data.domain.name}.linera`,
+    return NextResponse.json(
+      {
+        success: true,
+        domain: {
+          ...result.data.domain,
+          fullName: `${result.data.domain.name}.linera`,
+        },
       },
-    });
+      { headers: corsHeaders },
+    );
   } catch (error) {
     console.error("Domain lookup error:", error);
     return NextResponse.json(
@@ -188,7 +206,7 @@ export async function GET(
         error: "Failed to lookup domain",
         details: error instanceof Error ? error.message : "Unknown error",
       },
-      { status: 500 },
+      { status: 500, headers: corsHeaders },
     );
   }
 }

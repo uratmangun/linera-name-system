@@ -19,12 +19,12 @@ const nextConfig: NextConfig = {
     ];
   },
   // Required for SharedArrayBuffer support (Linera WASM)
-  // Exclude /llms.txt and /docs.md from COOP/COEP headers for LLM crawler compatibility
+  // Exclude /llms.txt, /docs.md, and /api/domain from COOP/COEP headers for LLM crawler compatibility
   async headers() {
     return [
       {
-        // Apply strict headers to all routes except LLM endpoints
-        source: "/((?!llms-txt|llms\\.txt|docs\\.md).*)",
+        // Apply strict headers to all routes except LLM endpoints and domain API
+        source: "/((?!llms-txt|llms\\.txt|docs\\.md|api/domain).*)",
         headers: [
           {
             key: "Cross-Origin-Opener-Policy",
