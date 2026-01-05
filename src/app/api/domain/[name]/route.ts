@@ -5,9 +5,18 @@ const LINERA_NODE_SERVICE_URL =
   process.env.NEXT_PUBLIC_LINERA_NODE_SERVICE_URL ||
   "http://localhost:8080";
 
-const APPLICATION_ID = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
+const APPLICATION_ID =
+  process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID ||
+  "8870c972d06cc98f59ede8ecae28804acb66446ef3638bcded797fa789435d78";
+
 const REGISTRY_CHAIN_ID =
   process.env.NEXT_PUBLIC_LINERA_REGISTRY_CHAIN_ID || "";
+
+// Default bootstrap chain ID - used to query registryChainId if env var not set
+// This is a known chain where the application is deployed
+const BOOTSTRAP_CHAIN_ID =
+  process.env.LINERA_BOOTSTRAP_CHAIN_ID ||
+  "e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65";
 
 interface DomainInfo {
   name: string;
@@ -28,13 +37,47 @@ interface GraphQLResponse {
   errors?: Array<{ message: string }>;
 }
 
+// Cache the registry chain ID to avoid repeated queries
+let cachedRegistryChainId: string | null = null;
+
 async function getRegistryChainId(): Promise<string | null> {
+  // First, check environment variable
   if (REGISTRY_CHAIN_ID) {
     return REGISTRY_CHAIN_ID;
   }
 
-  // If not configured, try to fetch it from the application
-  // This requires knowing at least one chain ID, so we'll return null
+  // Return cached value if available
+  if (cachedRegistryChainId) {
+    return cachedRegistryChainId;
+  }
+
+  // Try to fetch registryChainId from the application using bootstrap chain
+  try {
+    const url = `${LINERA_NODE_SERVICE_URL}/chains/${BOOTSTRAP_CHAIN_ID}/applications/${APPLICATION_ID}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: "query { registryChainId }" }),
+    });
+
+    if (response.ok) {
+      const result: GraphQLResponse = await response.json();
+      if (result.data?.registryChainId) {
+        cachedRegistryChainId = result.data.registryChainId;
+        console.log(
+          "Fetched registryChainId from application:",
+          cachedRegistryChainId,
+        );
+        return cachedRegistryChainId;
+      }
+    }
+  } catch (error) {
+    console.error("Failed to fetch registryChainId from application:", error);
+  }
+
   return null;
 }
 
