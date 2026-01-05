@@ -34,10 +34,10 @@ export default function DocsPage() {
                 Home
               </Link>
               <Link
-                href="/docs.md"
+                href="/llms.txt"
                 className="hover:text-sky-500 transition-colors text-zinc-500"
               >
-                Raw Markdown
+                llms.txt
               </Link>
             </div>
           </div>

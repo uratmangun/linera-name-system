@@ -9,7 +9,9 @@ const corsHeaders = {
 export async function GET() {
   return new Response(DOCS_MARKDOWN, {
     headers: {
-      "Content-Type": "text/markdown; charset=utf-8",
+      // Use text/plain for maximum compatibility with LLM crawlers
+      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Disposition": 'inline; filename="llms.txt"',
       ...corsHeaders,
     },
   });

@@ -1,6 +1,6 @@
 export const DOCS_MARKDOWN = `# Linera Name System API Documentation
 
-This documentation is also available as raw markdown at [\`/docs.md\`](/docs.md) for easy LLM parsing.
+This documentation is also available as plain text at [\`/llms.txt\`](/llms.txt) for easy LLM parsing.
 
 ---
 

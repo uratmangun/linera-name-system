@@ -5,20 +5,26 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  // Rewrite /docs.md to /raw-docs (Next.js doesn't support dots in folder names)
+  // Rewrite /llms.txt and /docs.md to /llms-txt (Next.js doesn't support dots in folder names)
   async rewrites() {
     return [
       {
+        source: "/llms.txt",
+        destination: "/llms-txt",
+      },
+      {
         source: "/docs.md",
-        destination: "/raw-docs",
+        destination: "/llms-txt",
       },
     ];
   },
   // Required for SharedArrayBuffer support (Linera WASM)
+  // Exclude /llms.txt and /docs.md from COOP/COEP headers for LLM crawler compatibility
   async headers() {
     return [
       {
-        source: "/(.*)",
+        // Apply strict headers to all routes except LLM endpoints
+        source: "/((?!llms-txt|llms\\.txt|docs\\.md).*)",
         headers: [
           {
             key: "Cross-Origin-Opener-Policy",
