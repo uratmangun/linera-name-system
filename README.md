@@ -1,3 +1,6 @@
+AKINDO PAGE: https://app.akindo.io/communities/4er3MmDL0u22gOd86/products/0nro2Nv3eT00jOzZ
+YOUTUBE DEMO: https://www.youtube.com/watch?v=sRjxlZCsGb4&embeds_referring_euri=https%3A%2F%2Fapp.akindo.io%2F
+
 # Linera Name System (LNS)
 
 The **Linera Name System (LNS)** is a decentralized identity identity protocol built on the [Linera](https://linera.io) microchain network. It allows users to register, manage, and trade human-readable `.linera` domains, replacing complex cryptographic addresses (Chain IDs) with memorable names.
