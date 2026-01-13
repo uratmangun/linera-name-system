@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDynamicContext, useIsLoggedIn } from "@dynamic-labs/sdk-react-core";
-import { DynamicWidget } from "@dynamic-labs/sdk-react-core";
+import { useAccount, useWalletClient } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { lineraAdapter, type LineraProvider } from "@/lib/linera-adapter";
 
 interface BlockLog {
@@ -14,11 +14,6 @@ interface DomainQueryResult {
   Owner?: string | null;
   IsAvailable?: boolean;
   domain?: ExtendedDomainInfo;
-}
-
-interface DomainInfo {
-  name: string;
-  owner: string;
 }
 
 interface ExtendedDomainInfo {
@@ -33,8 +28,8 @@ interface ExtendedDomainInfo {
 }
 
 export default function CounterApp() {
-  const { primaryWallet } = useDynamicContext();
-  const isLoggedIn = useIsLoggedIn();
+  const { address, isConnected } = useAccount();
+  const { data: walletClient } = useWalletClient();
   const [mounted, setMounted] = useState(false);
   const [chainId, setChainId] = useState<string | null>(null);
   const [registryChainId, setRegistryChainId] = useState<string | null>(null);
@@ -90,7 +85,7 @@ export default function CounterApp() {
 
   // Auto-connect to Linera when wallet is connected
   const autoConnect = useCallback(async () => {
-    if (!primaryWallet || !applicationId || isAutoConnecting) return;
+    if (!walletClient || !address || !applicationId || isAutoConnecting) return;
     if (chainConnected && appConnected) return;
 
     setIsAutoConnecting(true);
@@ -99,7 +94,7 @@ export default function CounterApp() {
     try {
       // Connect to Linera chain
       if (!chainConnected) {
-        const provider = await lineraAdapter.connect(primaryWallet);
+        const provider = await lineraAdapter.connect(walletClient, address);
         providerRef.current = provider;
         setChainConnected(true);
         setChainId(provider.chainId);
@@ -119,7 +114,8 @@ export default function CounterApp() {
       setIsAutoConnecting(false);
     }
   }, [
-    primaryWallet,
+    walletClient,
+    address,
     applicationId,
     chainConnected,
     appConnected,
@@ -127,14 +123,21 @@ export default function CounterApp() {
   ]);
 
   useEffect(() => {
-    if (mounted && isLoggedIn && primaryWallet && !chainConnected) {
+    if (mounted && isConnected && walletClient && address && !chainConnected) {
       autoConnect();
     }
-  }, [mounted, isLoggedIn, primaryWallet, chainConnected, autoConnect]);
+  }, [
+    mounted,
+    isConnected,
+    walletClient,
+    address,
+    chainConnected,
+    autoConnect,
+  ]);
 
-  // Reset Linera adapter when Dynamic wallet disconnects
+  // Reset Linera adapter when wallet disconnects
   useEffect(() => {
-    if (!isLoggedIn || !primaryWallet) {
+    if (!isConnected || !address) {
       lineraAdapter.reset();
       providerRef.current = null;
       setChainConnected(false);
@@ -148,12 +151,13 @@ export default function CounterApp() {
       setBalance(null);
       setClaimableBalance(null);
     }
-  }, [isLoggedIn, primaryWallet]);
+  }, [isConnected, address]);
 
   useEffect(() => {
     if (!chainConnected || !providerRef.current) return;
     const client = providerRef.current.client;
-    if (!client || typeof client.onNotification !== "function") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (!client || typeof (client as any).onNotification !== "function") return;
 
     const handler = (notification: unknown) => {
       const newBlock: BlockLog | undefined = (
@@ -164,7 +168,8 @@ export default function CounterApp() {
     };
 
     try {
-      client.onNotification(handler);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).onNotification(handler);
     } catch (err) {
       console.error("Failed to set notification handler:", err);
     }
@@ -233,7 +238,7 @@ export default function CounterApp() {
 
   // Fetch claimable balance for domain sales
   const fetchClaimableBalance = useCallback(async () => {
-    if (!appConnected || !registryChainId || !primaryWallet?.address) return;
+    if (!appConnected || !registryChainId || !address) return;
     setIsLoadingClaimable(true);
 
     try {
@@ -243,7 +248,7 @@ export default function CounterApp() {
       }>(
         registryChainId,
         applicationId,
-        `query { claimableBalance(owner: "${primaryWallet.address}") }`,
+        `query { claimableBalance(owner: "${address}") }`,
       );
       if (result.errors?.length) {
         throw new Error(result.errors[0].message);
@@ -255,7 +260,7 @@ export default function CounterApp() {
     } finally {
       setIsLoadingClaimable(false);
     }
-  }, [appConnected, registryChainId, applicationId, primaryWallet?.address]);
+  }, [appConnected, registryChainId, applicationId, address]);
 
   // Fetch balance when chain is connected
   useEffect(() => {
@@ -280,15 +285,10 @@ export default function CounterApp() {
 
   // Fetch claimable balance when app is connected and wallet is available
   useEffect(() => {
-    if (appConnected && registryChainId && primaryWallet?.address) {
+    if (appConnected && registryChainId && address) {
       fetchClaimableBalance();
     }
-  }, [
-    appConnected,
-    registryChainId,
-    primaryWallet?.address,
-    fetchClaimableBalance,
-  ]);
+  }, [appConnected, registryChainId, address, fetchClaimableBalance]);
 
   // Update selectedDomain when allDomains changes (to reflect updates after operations)
   const selectedDomainName = selectedDomain?.name;
@@ -742,11 +742,11 @@ export default function CounterApp() {
 
   // Filter domains to only show those owned by the logged-in account
   const myDomains = useMemo(() => {
-    if (!primaryWallet?.address) return [];
+    if (!address) return [];
     return allDomains.filter(
-      (d) => d.owner.toLowerCase() === primaryWallet.address.toLowerCase(),
+      (d) => d.owner.toLowerCase() === address.toLowerCase(),
     );
-  }, [allDomains, primaryWallet?.address]);
+  }, [allDomains, address]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
@@ -756,7 +756,7 @@ export default function CounterApp() {
             <h1 className="text-3xl font-bold text-zinc-900 dark:text-white">
               Linera Name System
             </h1>
-            <DynamicWidget />
+            <ConnectButton />
           </div>
 
           <div className="mb-8">
@@ -785,7 +785,7 @@ export default function CounterApp() {
             </div>
           )}
 
-          {mounted && !isLoggedIn && (
+          {mounted && !isConnected && (
             <div className="mb-6 rounded-lg bg-zinc-100 p-6 text-center dark:bg-zinc-800">
               <p className="text-zinc-500 dark:text-zinc-400">
                 Please connect your wallet using the button above to get
@@ -909,9 +909,9 @@ export default function CounterApp() {
                         {/* Buy button - show if domain is for sale and not owned by current user */}
                         {searchResult.domain.isForSale &&
                           !searchResult.domain.isExpired &&
-                          primaryWallet?.address &&
+                          address &&
                           searchResult.domain.owner.toLowerCase() !==
-                            primaryWallet.address.toLowerCase() && (
+                            address.toLowerCase() && (
                             <div className="mt-4">
                               <button
                                 type="button"
@@ -1247,9 +1247,9 @@ export default function CounterApp() {
                   {/* Buy Domain - only show if not the owner */}
                   {selectedDomain.isForSale &&
                     !selectedDomain.isExpired &&
-                    primaryWallet?.address &&
+                    address &&
                     selectedDomain.owner.toLowerCase() !==
-                      primaryWallet.address.toLowerCase() && (
+                      address.toLowerCase() && (
                       <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-700">
                         <h3 className="mb-2 font-semibold text-zinc-900 dark:text-white">
                           Buy Domain

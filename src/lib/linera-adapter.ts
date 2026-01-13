@@ -1,6 +1,6 @@
 import type { Faucet, Client, Wallet, Application } from "@linera/client";
-import type { Wallet as DynamicWallet } from "@dynamic-labs/sdk-react-core";
-import { DynamicSigner } from "./dynamic-signer";
+import type { WalletClient } from "viem";
+import { WagmiSigner } from "./wagmi-signer";
 import { loadLinera } from "./linera-loader";
 
 const LINERA_RPC_URL = "https://faucet.testnet-conway.linera.net";
@@ -32,48 +32,47 @@ export class LineraAdapter {
   }
 
   async connect(
-    dynamicWallet: DynamicWallet,
+    walletClient: WalletClient,
+    address: string,
     rpcUrl?: string,
   ): Promise<LineraProvider> {
     if (this.provider) return this.provider;
     if (this.connectPromise) return this.connectPromise;
 
-    if (!dynamicWallet) {
-      throw new Error("Dynamic wallet is required for Linera connection");
+    if (!walletClient || !address) {
+      throw new Error(
+        "Wallet client and address are required for Linera connection",
+      );
     }
 
     try {
       this.connectPromise = (async () => {
-        const { address } = dynamicWallet;
-        console.log("🔗 Connecting with Dynamic wallet:", address);
+        console.log("Connecting with wagmi wallet:", address);
 
         // Load Linera from public folder to avoid file:// URL issues
         const linera = await loadLinera();
-        console.log("✅ Linera WASM modules initialized successfully");
+        console.log("Linera WASM modules initialized successfully");
 
         const faucet = new linera.Faucet(rpcUrl || LINERA_RPC_URL);
         const wallet = await faucet.createWallet();
         const chainId = await faucet.claimChain(wallet, address);
 
-        const signer = new DynamicSigner(dynamicWallet);
+        const signer = new WagmiSigner(walletClient, address);
         // Third parameter is skip_process_inbox (false = process inbox)
         // Client constructor may return a Promise in WASM bindings
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const client = await Promise.resolve(
-          new linera.Client(wallet, signer, true),
+          new (linera.Client as any)(wallet, signer, true),
         );
-        console.log("✅ Linera wallet created successfully!");
-        console.log(
-          "🔍 Client methods:",
-          Object.keys(client),
-          typeof client.frontend,
-        );
+        console.log("Linera wallet created successfully!");
+        console.log("Client methods:", Object.keys(client));
 
         this.provider = {
           client,
           wallet,
           faucet,
           chainId,
-          address: dynamicWallet.address,
+          address,
         };
 
         this.onConnectionChange?.();
@@ -97,12 +96,13 @@ export class LineraAdapter {
   async setApplication(appId?: string) {
     if (!this.provider) throw new Error("Not connected to Linera");
 
-    const application = await this.provider.client
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const application = await (this.provider.client as any)
       .frontend()
       .application(appId || LINERA_APPLICATION_ID);
 
     if (!application) throw new Error("Failed to get application");
-    console.log("✅ Linera application set successfully!");
+    console.log("Linera application set successfully!");
     this.application = application;
     this.onConnectionChange?.();
   }
@@ -113,7 +113,7 @@ export class LineraAdapter {
     const result = await this.application.query(JSON.stringify(query));
     const response = JSON.parse(result);
 
-    console.log("✅ Linera application queried successfully!");
+    console.log("Linera application queried successfully!");
     return response as T;
   }
 
@@ -127,7 +127,7 @@ export class LineraAdapter {
     applicationId: string,
     query: string,
   ): Promise<T> {
-    console.log(`🔍 Querying application on chain ${chainId.slice(0, 16)}...`);
+    console.log(`Querying application on chain ${chainId.slice(0, 16)}...`);
 
     // Use the API proxy route to avoid CORS issues
     const response = await fetch("/api/linera", {
@@ -146,7 +146,7 @@ export class LineraAdapter {
     }
 
     const result = await response.json();
-    console.log("✅ Cross-chain query successful!");
+    console.log("Cross-chain query successful!");
     return result as T;
   }
 

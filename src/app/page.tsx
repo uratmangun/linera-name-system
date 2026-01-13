@@ -20,7 +20,7 @@ import {
   ShoppingCart,
 } from "lucide-react";
 import Image from "next/image";
-import { DynamicWidget } from "@dynamic-labs/sdk-react-core";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import {
   useLinera,
   type ExtendedDomainInfo,
@@ -330,12 +330,12 @@ export default function LandingPage() {
                   My Domains
                 </a>
               )}
-              <DynamicWidget />
+              <ConnectButton />
             </div>
 
             {/* Mobile Nav Toggle */}
             <div className="md:hidden flex items-center gap-2">
-              <DynamicWidget />
+              <ConnectButton />
               <button
                 type="button"
                 onClick={() => setIsMenuOpen(!isMenuOpen)}

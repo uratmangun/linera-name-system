@@ -2,8 +2,8 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useDynamicContext, useIsLoggedIn } from "@dynamic-labs/sdk-react-core";
-import { DynamicWidget } from "@dynamic-labs/sdk-react-core";
+import { useAccount, useWalletClient } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { lineraAdapter, type LineraProvider } from "@/lib/linera-adapter";
 
 const DomainCheckerApp = dynamic(
@@ -26,8 +26,8 @@ const DOMAIN_CHECKER_APP_ID =
 const LNS_APPLICATION_ID = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
 
 export default function DomainCheckerPage() {
-  const { primaryWallet } = useDynamicContext();
-  const isLoggedIn = useIsLoggedIn();
+  const { address, isConnected } = useAccount();
+  const { data: walletClient } = useWalletClient();
   const [mounted, setMounted] = useState(false);
   const [chainConnected, setChainConnected] = useState(false);
   const [appConnected, setAppConnected] = useState(false);
@@ -44,7 +44,8 @@ export default function DomainCheckerPage() {
 
   // Auto-connect to Linera when wallet is connected
   const autoConnect = useCallback(async () => {
-    if (!primaryWallet || !DOMAIN_CHECKER_APP_ID || isAutoConnecting) return;
+    if (!walletClient || !address || !DOMAIN_CHECKER_APP_ID || isAutoConnecting)
+      return;
     if (chainConnected && appConnected) return;
 
     setIsAutoConnecting(true);
@@ -53,7 +54,7 @@ export default function DomainCheckerPage() {
     try {
       // Connect to Linera chain
       if (!chainConnected) {
-        const provider = await lineraAdapter.connect(primaryWallet);
+        const provider = await lineraAdapter.connect(walletClient, address);
         providerRef.current = provider;
         setChainConnected(true);
       }
@@ -71,13 +72,20 @@ export default function DomainCheckerPage() {
     } finally {
       setIsAutoConnecting(false);
     }
-  }, [primaryWallet, chainConnected, appConnected, isAutoConnecting]);
+  }, [walletClient, address, chainConnected, appConnected, isAutoConnecting]);
 
   useEffect(() => {
-    if (mounted && isLoggedIn && primaryWallet && !chainConnected) {
+    if (mounted && isConnected && walletClient && address && !chainConnected) {
       autoConnect();
     }
-  }, [mounted, isLoggedIn, primaryWallet, chainConnected, autoConnect]);
+  }, [
+    mounted,
+    isConnected,
+    walletClient,
+    address,
+    chainConnected,
+    autoConnect,
+  ]);
 
   // Set registry chain ID from LNS application ID
   // The application ID format is <chain_id (64 chars)><bytecode_id>
@@ -92,7 +100,7 @@ export default function DomainCheckerPage() {
 
   // Reset when wallet disconnects
   useEffect(() => {
-    if (!isLoggedIn || !primaryWallet) {
+    if (!isConnected || !address) {
       lineraAdapter.reset();
       providerRef.current = null;
       setChainConnected(false);
@@ -100,7 +108,7 @@ export default function DomainCheckerPage() {
       setRegistryChainId(null);
       setError(null);
     }
-  }, [isLoggedIn, primaryWallet]);
+  }, [isConnected, address]);
 
   if (!mounted) return null;
 
@@ -118,7 +126,7 @@ export default function DomainCheckerPage() {
               across chains
             </p>
           </div>
-          <DynamicWidget />
+          <ConnectButton />
         </div>
 
         {/* Error Display */}
@@ -129,7 +137,7 @@ export default function DomainCheckerPage() {
         )}
 
         {/* Connection Status */}
-        {!isLoggedIn ? (
+        {!isConnected ? (
           <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center dark:border-zinc-700 dark:bg-zinc-900">
             <p className="text-zinc-600 dark:text-zinc-400">
               Please connect your wallet to use the Domain Checker

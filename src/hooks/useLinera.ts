@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDynamicContext, useIsLoggedIn } from "@dynamic-labs/sdk-react-core";
+import { useAccount, useWalletClient } from "wagmi";
 import { lineraAdapter, type LineraProvider } from "@/lib/linera-adapter";
 
 export interface ExtendedDomainInfo {
@@ -30,8 +30,8 @@ const APPLICATION_ID = process.env.NEXT_PUBLIC_LINERA_APPLICATION_ID || "";
 const REGISTRATION_FEE_LINERA = 0.1;
 
 export function useLinera() {
-  const { primaryWallet } = useDynamicContext();
-  const isLoggedIn = useIsLoggedIn();
+  const { address, isConnected } = useAccount();
+  const { data: walletClient } = useWalletClient();
   const [mounted, setMounted] = useState(false);
   const [chainId, setChainId] = useState<string | null>(null);
   const [registryChainId, setRegistryChainId] = useState<string | null>(null);
@@ -61,7 +61,8 @@ export function useLinera() {
 
   // Auto-connect to Linera when wallet is connected
   const autoConnect = useCallback(async () => {
-    if (!primaryWallet || !APPLICATION_ID || isAutoConnecting) return;
+    if (!walletClient || !address || !APPLICATION_ID || isAutoConnecting)
+      return;
     if (chainConnected && appConnected) return;
 
     setIsAutoConnecting(true);
@@ -69,7 +70,7 @@ export function useLinera() {
 
     try {
       if (!chainConnected) {
-        const provider = await lineraAdapter.connect(primaryWallet);
+        const provider = await lineraAdapter.connect(walletClient, address);
         providerRef.current = provider;
         setChainConnected(true);
         setChainId(provider.chainId);
@@ -87,17 +88,24 @@ export function useLinera() {
     } finally {
       setIsAutoConnecting(false);
     }
-  }, [primaryWallet, chainConnected, appConnected, isAutoConnecting]);
+  }, [walletClient, address, chainConnected, appConnected, isAutoConnecting]);
 
   useEffect(() => {
-    if (mounted && isLoggedIn && primaryWallet && !chainConnected) {
+    if (mounted && isConnected && walletClient && address && !chainConnected) {
       autoConnect();
     }
-  }, [mounted, isLoggedIn, primaryWallet, chainConnected, autoConnect]);
+  }, [
+    mounted,
+    isConnected,
+    walletClient,
+    address,
+    chainConnected,
+    autoConnect,
+  ]);
 
   // Reset when wallet disconnects
   useEffect(() => {
-    if (!isLoggedIn || !primaryWallet) {
+    if (!isConnected || !address) {
       lineraAdapter.reset();
       providerRef.current = null;
       setChainConnected(false);
@@ -110,13 +118,14 @@ export function useLinera() {
       setBalance(null);
       setClaimableBalance(null);
     }
-  }, [isLoggedIn, primaryWallet]);
+  }, [isConnected, address]);
 
   // Block notifications
   useEffect(() => {
     if (!chainConnected || !providerRef.current) return;
     const client = providerRef.current.client;
-    if (!client || typeof client.onNotification !== "function") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (!client || typeof (client as any).onNotification !== "function") return;
 
     const handler = (notification: unknown) => {
       const newBlock: BlockLog | undefined = (
@@ -127,7 +136,8 @@ export function useLinera() {
     };
 
     try {
-      client.onNotification(handler);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).onNotification(handler);
     } catch (err) {
       console.error("Failed to set notification handler:", err);
     }
@@ -191,7 +201,7 @@ export function useLinera() {
 
   // Fetch claimable balance
   const fetchClaimableBalance = useCallback(async () => {
-    if (!appConnected || !registryChainId || !primaryWallet?.address) return;
+    if (!appConnected || !registryChainId || !address) return;
     setIsLoadingClaimable(true);
     try {
       const result = await lineraAdapter.queryApplicationOnChain<{
@@ -200,7 +210,7 @@ export function useLinera() {
       }>(
         registryChainId,
         APPLICATION_ID,
-        `query { claimableBalance(owner: "${primaryWallet.address}") }`,
+        `query { claimableBalance(owner: "${address}") }`,
       );
       if (result.errors?.length) {
         throw new Error(result.errors[0].message);
@@ -212,7 +222,7 @@ export function useLinera() {
     } finally {
       setIsLoadingClaimable(false);
     }
-  }, [appConnected, registryChainId, primaryWallet?.address]);
+  }, [appConnected, registryChainId, address]);
 
   // Auto-fetch on connection
   useEffect(() => {
@@ -228,15 +238,10 @@ export function useLinera() {
   }, [appConnected, registryChainId, fetchAllDomains]);
 
   useEffect(() => {
-    if (appConnected && registryChainId && primaryWallet?.address) {
+    if (appConnected && registryChainId && address) {
       fetchClaimableBalance();
     }
-  }, [
-    appConnected,
-    registryChainId,
-    primaryWallet?.address,
-    fetchClaimableBalance,
-  ]);
+  }, [appConnected, registryChainId, address, fetchClaimableBalance]);
 
   // Check domain availability
   const checkDomain = useCallback(
@@ -424,11 +429,11 @@ export function useLinera() {
 
   // My domains
   const myDomains = useMemo(() => {
-    if (!primaryWallet?.address) return [];
+    if (!address) return [];
     return allDomains.filter(
-      (d) => d.owner.toLowerCase() === primaryWallet.address.toLowerCase(),
+      (d) => d.owner.toLowerCase() === address.toLowerCase(),
     );
-  }, [allDomains, primaryWallet?.address]);
+  }, [allDomains, address]);
 
   // Utility functions
   const formatExpiration = (timestamp: number): string => {
@@ -460,8 +465,8 @@ export function useLinera() {
   return {
     // State
     mounted,
-    isLoggedIn,
-    primaryWallet,
+    isLoggedIn: isConnected,
+    primaryWallet: address ? { address } : null,
     chainId,
     registryChainId,
     chainConnected,
